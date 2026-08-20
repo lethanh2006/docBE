@@ -119,7 +119,7 @@ Từ thư mục `backend`:
 
 ```bash
 docker compose up -d --build --wait payment-postgres rabbitmq payment canteen gateway
-docker compose exec payment npm run migration:show
+docker compose exec payment npm run migration:show:compiled
 curl http://127.0.0.1:5006/health/ready
 ```
 
