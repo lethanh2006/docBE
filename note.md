@@ -8,6 +8,7 @@
    - [1.3. Định nghĩa DI](#13-định-nghĩa-di)
    - [1.4. DI trong NestJS (IoC Container)](#14-di-trong-nestjs-ioc-container)
    - [1.5. Câu trả lời phỏng vấn (elevator pitch)](#15-câu-trả-lời-phỏng-vấn-elevator-pitch)
+   - [1.6. DI có phải là đa hình runtime không?](#16-di-có-phải-là-đa-hình-runtime-không)
 2. [JWT & Authorization](#2-jwt--authorization)
    - [2.1. jwt.strategy.ts](#21-jwtstrategyts)
    - [2.2. jwt.guard.ts](#22-jwtguardts)
@@ -129,6 +130,91 @@ DI giải quyết bằng cách **tách việc "tạo object" ra khỏi việc "d
 > DI là kỹ thuật để 1 class không tự tạo những thứ nó cần dùng, mà nhận (được tiêm) từ bên ngoài — thường qua constructor. Trong NestJS, framework tự tạo và quản lý các object này (mặc định singleton — chỉ 1 instance dùng chung toàn app), giúp code giảm phụ thuộc chặt, tránh lặp code khởi tạo, và dễ viết unit test hơn vì có thể dễ dàng thay bằng mock.
 
 **💡 Mẹo khi phỏng vấn:** nếu được hỏi thêm "cho ví dụ thực tế", có thể kể lại đúng ví dụ `RedisService`/`RabbitMQService` ở trên — vì đã tự suy luận ra được cả 2 vấn đề cốt lõi (dư thừa kết nối + code trùng lặp), đó là hiểu bản chất thật sự, không phải học thuộc lòng.
+
+### 1.6. DI có phải là đa hình runtime không?
+
+**Có liên quan, nhưng không phải cùng một khái niệm.** Cảm giác chúng giống nhau là hợp lý vì cả hai đều có tinh thần: code sử dụng chỉ gọi qua một tên/kiểu chung, còn đối tượng hoặc hành vi thực tế phía sau có thể được quyết định khi chương trình chạy.
+
+- **Đa hình qua override:** cùng lời gọi `this.prepareCreate(dto)`, nhưng chạy phiên bản của `CategoryService` hay `IngredientService` phụ thuộc vào object thật mà `this` đang trỏ tới lúc runtime.
+- **DI:** `AuthService` chỉ khai báo rằng nó cần một dependency; object cụ thể được đưa vào là gì (Redis thật hay mock khi test) phụ thuộc vào cấu hình provider của DI container.
+
+**Điểm khác nhau về bản chất:**
+
+| Tiêu chí | Đa hình qua override | Dependency Injection |
+|---|---|---|
+| Giải quyết vấn đề gì? | **Hành vi nào** được thực thi khi gọi method | **Ai tạo và cung cấp object** cho class sử dụng |
+| Cơ chế chính | Kế thừa, override và dynamic dispatch | Nhận dependency từ bên ngoài, thường qua constructor, thay vì tự `new` |
+| Thuộc phạm trù | Cơ chế OOP về hành vi | Kỹ thuật thiết kế để thực hiện IoC và quản lý dependency |
+| Có bắt buộc cần kế thừa/interface không? | Override cần quan hệ class cha–class con | Không; inject trực tiếp một class cụ thể vẫn là DI |
+
+Ví dụ dưới đây **đã là DI**, dù `AuthService` phụ thuộc trực tiếp vào class cụ thể và chưa dùng đa hình:
+
+```typescript
+@Injectable()
+class AuthService {
+  constructor(private readonly cache: RedisService) {}
+}
+```
+
+#### Chỗ DI và đa hình thật sự kết hợp
+
+DI phát huy tính linh hoạt mạnh nhất khi class sử dụng phụ thuộc vào một **abstraction** thay vì implementation cụ thể. Khi đó cùng một code của `AuthService` có thể hoạt động với nhiều implementation khác nhau:
+
+```typescript
+interface CacheService {
+  get(key: string): Promise<string | null>;
+}
+
+const CACHE_SERVICE = Symbol('CACHE_SERVICE');
+
+@Injectable()
+class AuthService {
+  constructor(
+    @Inject(CACHE_SERVICE)
+    private readonly cache: CacheService,
+  ) {}
+}
+```
+
+Binding dùng Redis trong ứng dụng thật:
+
+```typescript
+@Module({
+  providers: [
+    AuthService,
+    RedisService,
+    { provide: CACHE_SERVICE, useExisting: RedisService },
+  ],
+})
+class AuthModule {}
+```
+
+Khi unit test, có thể thay provider bằng mock mà không sửa code của `AuthService`:
+
+```typescript
+const moduleRef = await Test.createTestingModule({
+  providers: [
+    AuthService,
+    {
+      provide: CACHE_SERVICE,
+      useValue: { get: jest.fn() },
+    },
+  ],
+}).compile();
+```
+
+> **Lưu ý TypeScript/NestJS:** không thể chỉ viết `constructor(cache: CacheService)` rồi mong Nest tự inject theo interface, vì interface TypeScript bị xóa sau khi compile và không tồn tại ở runtime. Cần một runtime token như `Symbol`, string hoặc abstract class, rồi dùng `@Inject(token)`.
+
+Trường hợp trên có cả hai cơ chế:
+
+1. **DI** chịu trách nhiệm tạo/chọn object và đưa nó vào constructor.
+2. **Đa hình** cho phép `AuthService` gọi cùng method `cache.get()` nhưng nhận hành vi khác nhau từ `RedisService` hoặc mock.
+
+Điều này cũng phù hợp với **Dependency Inversion Principle (DIP)** — chữ **D** trong SOLID: module cấp cao nên phụ thuộc vào abstraction, không phụ thuộc chặt vào implementation cụ thể. Tuy nhiên cần nhớ: **DI và DIP liên quan nhưng không đồng nghĩa**; DI là một kỹ thuật thường được dùng để hiện thực hóa DIP.
+
+**Câu trả lời gọn khi phỏng vấn:**
+
+> "DI và đa hình có liên quan nhưng khác tầng. Đa hình quyết định hành vi nào chạy cho cùng một lời gọi dựa trên object thực tế. DI tách việc tạo và cung cấp object ra khỏi class sử dụng. DI không bắt buộc phải có đa hình, nhưng khi inject theo abstraction và đổi được implementation thật/mock, DI đang tận dụng đa hình để code linh hoạt và dễ test hơn."
 
 [⬆ Về mục lục](#-mục-lục)
 
