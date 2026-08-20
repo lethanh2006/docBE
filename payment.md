@@ -55,13 +55,14 @@ Ngân hàng -> Casso -> Gateway -> Payment webhook
 | Method | Path | Xác thực | Mục đích |
 |---|---|---|---|
 | `POST` | `/api/payment/create-qr` | JWT | Tạo hoặc lấy lại QR đang chờ cho Order |
-| `GET` | `/api/payment/:paymentId` | JWT | Xem trạng thái một Payment |
-| `GET` | `/api/payment/order/:orderId` | JWT | Xem lịch sử Payment của Order |
+| `GET` | `/api/payment/payments/:paymentId` | JWT | Xem trạng thái một Payment |
+| `GET` | `/api/payment/orders/:orderId` | JWT | Xem Payment mới nhất của Order |
+| `GET` | `/api/payment/history` | JWT | Xem lịch sử Payment của người dùng |
 | `POST` | `/api/payment/webhooks/casso` | HMAC Casso | Nhận giao dịch Casso |
 
 Payment còn cung cấp trực tiếp:
 
-- `GET /health/live`: tiến trình còn sống.
+- `GET /health`: tiến trình còn sống.
 - `GET /health/ready`: PostgreSQL và RabbitMQ đã sẵn sàng.
 
 ## Dữ liệu và nhất quán
