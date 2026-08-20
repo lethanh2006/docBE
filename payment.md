@@ -41,12 +41,12 @@ Client
   -> Canteen: GET order và lấy finalAmount/owner/payment state
   -> Payment: request nội bộ đã ký gồm orderId + finalAmount + identity
   -> PostgreSQL: tạo hoặc tái sử dụng Payment PENDING
-  <- Client: paymentId, amount, reference, qrUrl, expiresAt
+  <- Client: paymentId, amount, transferContent, qrUrl, expiresAt
 
 Ngân hàng -> Casso -> Gateway -> Payment webhook
   -> kiểm chữ ký, tài khoản nhận, reference, số tiền và transaction id
   -> PostgreSQL transaction: Payment SUCCESS + webhook receipt + outbox event
-  -> RabbitMQ: payment.succeeded
+  -> RabbitMQ queue: canteen.payment.succeeded.v1
   -> Canteen consumer: paymentStatus = PAID
 ```
 
@@ -90,9 +90,8 @@ thái trước đó.
 
 ## Event tích hợp Canteen
 
-Routing key/event type: `payment.succeeded`.
-
-Queue của Canteen: `canteen.payment.succeeded.v1`.
+Payment gửi trực tiếp vào queue `canteen.payment.succeeded.v1` (không dùng
+exchange/routing key). Envelope dùng `eventType: payment.succeeded.v1`.
 
 Payload phiên bản 1 gồm `eventId`, `paymentId`, `orderId`, `userId`, số tiền,
 đơn vị tiền, phương thức, mã giao dịch nhà cung cấp và thời điểm thanh toán.
