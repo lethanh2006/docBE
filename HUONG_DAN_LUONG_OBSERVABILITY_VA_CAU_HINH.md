@@ -137,7 +137,7 @@ request/response body.
 | cAdvisor          | `ghcr.io/google/cadvisor:v0.57.0`                 | Metric Docker container                        |
 | redis_exporter    | `oliver006/redis_exporter:v1.89.0-alpine`         | Metric Redis                                   |
 | postgres_exporter | `prometheuscommunity/postgres-exporter:v0.20.1`   | Metric Payment PostgreSQL                      |
-| Loki              | `grafana/loki:3.7.0`                              | Lưu system/infra log local                     |
+| Loki              | `grafana/loki:3.7.0`                              | Lưu application và system/infra log local      |
 | Alloy             | `grafana/alloy:v1.18.0`                           | Discover Docker và chuyển system log vào Loki  |
 
 RabbitMQ image `rabbitmq:4.2.7-management-alpine` bật sẵn
@@ -403,7 +403,7 @@ Các port có thể đổi bằng biến tương ứng trong `.env`/`logger/.env
 | OTel Collector OTLP gRPC | `127.0.0.1:4317`                 | App host nếu dùng gRPC                       |
 | OTel Collector OTLP HTTP | <http://127.0.0.1:4318>          | App host dùng OTLP HTTP/protobuf             |
 | OTel Collector health    | <http://127.0.0.1:13133>         | Health extension                             |
-| Loki                     | <http://127.0.0.1:3100/ready>    | Chỉ system/infra log                         |
+| Loki                     | <http://127.0.0.1:3100/ready>    | Application và system/infra log              |
 | Alloy                    | <http://127.0.0.1:12345/-/ready> | Pipeline health/UI local                     |
 | RabbitMQ Management      | <http://127.0.0.1:15672>         | Login bằng root RabbitMQ credentials         |
 | RabbitMQ AMQP            | `127.0.0.1:5672`                 | App host                                     |
@@ -413,7 +413,7 @@ Các port có thể đổi bằng biến tương ứng trong `.env`/`logger/.env
 App service host ports: Auth `4000`, User `5000`, Mail `5001`, Chat `5002`, Todo
 `5003`, Workschedule `5004`, Canteen `5005`, Payment `5006`.
 
-node-exporter (`9100`), cAdvisor (`8080`), redis_exporter (`9121`),
+node-exporter (`9100`), cAdvisor (`8080`), blackbox exporter (`9115`), redis_exporter (`9121`),
 postgres_exporter (`9187`), RabbitMQ metrics (`15692`) và Collector self/app
 metric (`8888`/`8889`) chỉ expose trong Docker network, không publish ra host.
 
@@ -427,7 +427,15 @@ Grafana tự provision bốn datasource:
 Dashboard được provision vào folder `Infrastructure`:
 
 - `Infrastructure overview`;
+- `Container health`;
 - `Backend dependencies`.
+
+Dashboard được provision vào folder `Backend observability`:
+
+- `Service reliability` cho readiness, request rate, p95, 4xx/5xx, slow route,
+  rejection và sức khỏe span pipeline;
+- `Application logs` cho log theo service/severity và liên kết `trace_id` sang
+  Jaeger.
 
 ## 9. Kiểm tra sau khi setup
 
@@ -435,13 +443,17 @@ Baseline ngày 2026-08-25 đã được kiểm tra: shared package đạt `26/26
 Gateway `23/23`; Auth `31/31`; User `15/15`; Mail `12/12`; Chat `18/18`; Todo
 `47/47`; Workschedule `26/26`; Payment `16/16`; Canteen `45/45`. Cả 9 service
 build thành công. Smoke tự động xác nhận span đi qua Collector vào Jaeger và
-Prometheus báo `13/13` target `UP`, gồm cả Alertmanager. Mỗi môi trường mới vẫn
+Prometheus báo toàn bộ target `UP`, gồm cả Alertmanager và blackbox exporter.
+Blackbox còn xác nhận riêng `probe_success=1` cho đủ chín backend service. Mỗi môi trường mới vẫn
 phải chạy lại acceptance; kết quả máy này không thay production load/HA test.
 
 ### Health và scrape target
 
 ```bash
 npm run observability:smoke
+
+# Khi cả 9 backend service đang chạy:
+npm run observability:acceptance
 
 # Các probe lẻ khi cần khoanh vùng:
 curl -fsS http://127.0.0.1:13133/
@@ -457,7 +469,8 @@ một lần readiness chưa đạt trong lúc khởi động là lỗi business 
 
 Mở <http://127.0.0.1:9090/targets>. Khi chạy `npm run infra:up`, các job dự
 kiến gồm Prometheus, Alertmanager, node-exporter, cAdvisor, Redis, PostgreSQL,
-RabbitMQ, Collector, application metrics, Jaeger, Loki, Alloy và Grafana. Target
+RabbitMQ, blackbox exporter/backend readiness, Collector, application metrics,
+Jaeger, Loki, Alloy và Grafana. Target
 `DOWN` không đồng nghĩa API business đã lỗi; phải kiểm tra đúng
 exporter/dependency.
 
@@ -477,6 +490,10 @@ sum by (queue) (rabbitmq_queue_messages_ready)
 
 ```promql
 sum by (datname) (pg_stat_activity_count)
+```
+
+```promql
+probe_success{job="backend-readiness"}
 ```
 
 Metric `http.server.request.rejections` do app phát sẽ được Prometheus exporter
@@ -524,17 +541,31 @@ gốc chỉ nằm tại origin.
 Khi chạy `npm run dev`, terminal đã có prefix `[payment]`, `[gateway]`... nên có
 thể tìm trực tiếp trong output hoặc chuyển output vào file local do dev quản lý.
 
-### Xem system/infra log
+### Xem application và system/infra log
 
-Application log cố ý không được gửi vào Loki. Trong Grafana vào **Explore ->
-Loki** và dùng:
+Trong Grafana vào **Explore -> Loki**. Application log:
+
+```logql
+{log_scope="application"} | json
+```
+
+Có thể lọc severity và service mà không tạo indexed label cardinality cao:
+
+```logql
+{log_scope="application", service="gateway"} | json | severity=~"WARN|ERROR|FATAL"
+```
+
+System/infra log:
 
 ```logql
 {log_scope="system"}
 ```
 
-Có thể lọc tiếp theo `service`, `container` hoặc `compose_project`. Muốn xem app
-log, dùng terminal hoặc `docker compose logs`, không tìm trong Loki.
+Có thể lọc tiếp theo `service`, `container` hoặc `compose_project`. App log vẫn
+đồng thời có trong `docker compose logs`; Loki là bản lưu tập trung 7 ngày cho
+tra cứu local. `request_id`, `trace_id` và `error.id` chỉ nằm trong JSON body,
+không phải indexed label. Khi mở log detail trong Grafana, link `TraceID` chuyển
+thẳng sang Jaeger.
 
 ## 10. Dashboard và alert hiện có
 
@@ -546,7 +577,11 @@ Prometheus đánh giá rule mỗi 15 giây. Rule hiện gồm:
 - RabbitMQ ready backlog trên 1.000 message;
 - Redis/PostgreSQL exporter không kết nối được dependency;
 - PostgreSQL connection trên 85%;
-- Redis memory trên 85% khi Redis có cấu hình max memory.
+- Redis memory trên 85% khi Redis có cấu hình max memory;
+- backend readiness fail;
+- HTTP 5xx trên 5% khi có tải, p95 trên 1,5 giây;
+- container OOM, CPU throttling cao hoặc restart loop;
+- Alloy/Loki không còn scrape được.
 
 Xem rule tại <http://127.0.0.1:9090/alerts> và alert đã chuyển tiếp tại
 <http://127.0.0.1:9093>. Prometheus đã nối Alertmanager, nhưng receiver mặc định
@@ -567,8 +602,8 @@ silence và retry độc lập với business API.
 
 ### 11.1. Quy trình chung
 
-1. Chọn đúng **một** provider đầu tiên để tránh alert trùng.
-2. Tạo webhook hoặc bot token theo một trong các mục 11.2-11.4.
+1. Chọn một route config: một provider, hoặc receiver kết hợp Discord + Telegram.
+2. Tạo webhook hoặc bot token theo một trong các mục 11.2-11.5.
 3. Copy file example thành file `*.local.yaml`; đuôi này đã bị Git ignore.
 4. Chỉ cho user vận hành và group của container Alertmanager đọc file, rồi thay
    placeholder bằng secret thật.
@@ -631,7 +666,27 @@ Mở <http://127.0.0.1:9093> để xác nhận alert active và kiểm tra kênh
 khi test, silence alert trong UI hoặc đợi `resolve_timeout`. Không dùng payload
 test chứa dữ liệu người dùng/secret.
 
-### 11.2. Discord
+### 11.2. Discord + Telegram đồng thời
+
+Config `discord-telegram.yaml` đã sẵn sàng và đọc credential từ file thay vì
+nhúng secret vào YAML. Tạo ba file theo
+`logger/observability/alertmanager/secrets/README.md`:
+
+- `discord_webhook_url`;
+- `telegram_bot_token`;
+- `telegram_chat_id`.
+
+Đặt:
+
+```dotenv
+ALERTMANAGER_CONFIG_FILE=./observability/alertmanager/discord-telegram.yaml
+```
+
+Validate rồi recreate riêng Alertmanager như mục 11.1. Cả hai integration nằm
+trong cùng một receiver nên alert được group một lần nhưng gửi đồng thời tới hai
+kênh. Secret directory được mount read-only và nội dung đã bị Git ignore.
+
+### 11.3. Discord
 
 1. Vào Discord server -> **Server Settings -> Integrations -> Webhooks**.
 2. Chọn **New Webhook**, chọn channel cảnh báo và copy Webhook URL.
@@ -643,7 +698,7 @@ Hướng dẫn chính thức: [Alertmanager notification integrations](https://p
 và [Discord Webhooks](https://docs.discord.com/developers/platform/webhooks).
 Webhook URL là credential; nếu lộ phải xóa/recreate webhook tại Discord.
 
-### 11.3. Telegram
+### 11.4. Telegram
 
 1. Mở Telegram, tìm đúng bot đã xác minh **@BotFather**, chạy `/newbot` và lưu
    bot token.
@@ -670,7 +725,7 @@ Hướng dẫn chính thức: [Telegram BotFather](https://core.telegram.org/bot
 [Alertmanager integrations](https://prometheus.io/docs/alerting/latest/integrations/).
 Không gửi bot token vào chat/ticket; revoke token bằng BotFather nếu bị lộ.
 
-### 11.4. Slack
+### 11.5. Slack
 
 1. Vào [Slack Apps](https://api.slack.com/apps), tạo app cho workspace.
 2. Bật **Incoming Webhooks** và chọn **Add New Webhook to Workspace**.
@@ -681,7 +736,7 @@ Không gửi bot token vào chat/ticket; revoke token bằng BotFather nếu b�
 Hướng dẫn chính thức: [Slack Incoming Webhooks](https://api.slack.com/messaging/webhooks).
 Slack coi URL webhook là secret và có thể tự revoke URL bị public.
 
-### 11.5. Xem Alertmanager trong Grafana
+### 11.6. Xem Alertmanager trong Grafana
 
 Grafana đã provision datasource `Alertmanager` trỏ tới
 `http://alertmanager:9093`. Vào **Connections -> Data sources -> Alertmanager**
@@ -693,7 +748,7 @@ Nếu sau này chuyển rule thành Grafana-managed alert, có thể dùng Grafa
 Points trực tiếp, nhưng không chạy đồng thời hai đường notification cho cùng rule
 vì sẽ gửi trùng.
 
-### 11.6. Email và provider khác
+### 11.7. Email và provider khác
 
 Alertmanager còn hỗ trợ email, PagerDuty, Opsgenie, webhook và nhiều receiver
 khác. Chỉ thêm sau khi owner/on-call policy đã chốt. Với email phải có SMTP
@@ -704,11 +759,11 @@ Alertmanager, không viết HTTP notifier trong business code.
 
 | Dữ liệu                    | Retention hiện tại                           | Giới hạn                                                                                              |
 | -------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| App stdout/stderr          | Docker `local`, `10m x 3 file` mỗi container | Rotation theo dung lượng; remove/recreate/down có thể làm lịch sử cũ không còn phù hợp để tra lâu dài |
+| App stdout/stderr          | Docker `local`, `10m x 3 file` mỗi container | Rotation theo dung lượng; Alloy đồng thời chuyển bản đã sanitize vào Loki                                      |
 | Log container quan sát     | Docker `local`, `10m x 3 file` mỗi container | Chỉ là log vận hành của chính stack, không thay Loki/Prometheus/Jaeger                                |
 | Prometheus                 | `15d` mặc định (`PROMETHEUS_RETENTION`)      | Named volume local, single host                                                                       |
 | Alertmanager alert/silence | `120h` (`ALERTMANAGER_RETENTION`)            | Named volume `alertmanager_data`, single host; không phải error history dài hạn                       |
-| Loki system log            | `168h` (7 ngày)                              | Filesystem, replication `1`, không auth                                                               |
+| Loki application/system log| `168h` (7 ngày)                              | Filesystem, replication `1`, không auth; không thay error tracker production                           |
 | Jaeger trace               | In-memory all-in-one                         | Restart/recreate Jaeger làm mất trace                                                                 |
 | Grafana config             | Named volume `grafana_data`                  | Local SQLite/volume, chưa HA                                                                          |
 
@@ -855,12 +910,19 @@ notification trông như bị mất.
 
 ### Không thấy application log trong Loki
 
-Đây là hành vi đúng. Alloy chỉ keep container observability, Redis, RabbitMQ và
-PostgreSQL. Dùng:
+Application log phải có trong `{log_scope="application"}`. Kiểm tra Alloy target,
+Loki readiness và phát sinh một request mới vì Alloy tiếp tục từ saved position:
 
 ```bash
-docker compose --profile app logs --since=30m gateway payment
+curl -fsS http://127.0.0.1:12345/-/ready
+curl -fsS http://127.0.0.1:3100/ready
+docker logs --since=10m nrapp-observability-alloy-1
+docker compose --profile app logs --since=10m gateway payment
 ```
+
+Trong Grafana Explore dùng `{log_scope="application"} | json`. Nếu chỉ một
+service thiếu log, xác nhận tên Compose service thuộc allowlist trong
+`alloy-config.alloy` và container dùng Docker logging driver được Alloy đọc.
 
 ### Jaeger trống sau restart
 

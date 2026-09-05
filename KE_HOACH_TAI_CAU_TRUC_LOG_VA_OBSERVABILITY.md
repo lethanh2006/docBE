@@ -2,7 +2,7 @@
 
 > Trạng thái: **Đã triển khai baseline local/single-host cho 9 service; chưa nghiệm thu production, HA, retention và load test**  
 > Ngày lập: 2026-08-24  
-> Cập nhật triển khai: 2026-08-25  
+> Cập nhật triển khai: 2026-09-04  
 > Phạm vi đã rà: `gateway`, `auth`, `user`, `canteen`, `chat`, `todo`, `workschedule`, `payment`, `mail`, root Docker Compose và thư mục `logger`.
 
 ## 1. Kết luận và hướng đã triển khai
@@ -17,8 +17,8 @@ Kiến trúc baseline đã triển khai:
 | CPU, RAM, disk, network, container, service health, Redis/RabbitMQ/Postgres | **Exporters -> Prometheus -> Grafana**              | Prometheus thu/lưu metric; Grafana chỉ là giao diện dashboard và alerting, không phải nơi sinh hoặc lưu metric.                          |
 | Cảnh báo hạ tầng                                                            | **Prometheus -> Alertmanager -> provider tùy chọn** | Alertmanager group/route/silence/retry; mặc định `noop`, chưa gọi dịch vụ ngoài khi chưa có secret.                                      |
 | Lỗi backend bất thường                                                      | **Service structured stderr + OTel/Jaeger**         | Service phát sinh ghi đúng một error event/stack, tạo `errorId`, đồng thời record exception trên active span.                            |
-| Error center tập trung                                                      | **Deferred - chưa triển khai**                      | Không dùng Sentry/OpenSearch trong giai đoạn hiện tại; Docker giữ log ngắn hạn trên một host.                                            |
-| System/infra log nếu cần tra cứu                                            | **Alloy -> Loki -> Grafana**, tách riêng            | Loki không còn là nguồn để tính request latency hoặc làm error tracker chính. Có thể bỏ Loki nếu thực tế không cần system log tập trung. |
+| Error center tập trung                                                      | **Deferred - chưa triển khai**                      | Không dùng Sentry/OpenSearch; Loki hỗ trợ tìm log nhưng không thay exception grouping/ownership của error tracker.                       |
+| Application và system/infra log                                             | **stdout/stderr -> Alloy -> Loki -> Grafana**       | Hai `log_scope` tách riêng; ID cardinality cao ở JSON body, không index; latency vẫn lấy từ Prometheus/Jaeger.                            |
 | Lỗi client-facing để dev xem terminal                                       | **Gateway structured stdout/stderr**                | Gateway in một dòng cho mỗi `4xx` dự kiến; downstream không log lặp; không gửi lên cloud/error center.                                   |
 | Log ngắn hạn tại máy/container                                              | **JSON stdout/stderr + Docker `local` rotation**    | Là đường fallback/diagnostic, tuyệt đối không POST đồng bộ tới một `logger-service`.                                                     |
 
@@ -32,17 +32,17 @@ Kiến trúc baseline đã triển khai:
 
 ### Quyết định hiện tại về lỗi bất thường
 
-**Không triển khai Sentry hoặc error center cloud ở giai đoạn hiện tại.** Mỗi unexpected error được service sở hữu lỗi ghi đúng một lần ra structured `stderr`, tạo `errorId` nội bộ, có `trace_id`, `request_id`, service/release và record exception trên active Jaeger span. Docker logging driver giữ log ngắn hạn để dev/vận hành tra bằng terminal hoặc `docker compose logs`.
+**Không triển khai Sentry hoặc error center cloud ở giai đoạn hiện tại.** Mỗi unexpected error được service sở hữu lỗi ghi đúng một lần ra structured `stderr`, tạo `errorId` nội bộ, có `trace_id`, `request_id`, service/release và record exception trên active Jaeger span. Docker logging driver giữ fallback ngắn hạn; Alloy/Loki cung cấp tìm kiếm tập trung local với retention 7 ngày.
 
 Giới hạn được chấp nhận trong giai đoạn này:
 
 - chưa có grouping/regression/owner/alert cho exception;
-- chưa tìm kiếm lỗi tập trung xuyên nhiều server;
-- log có thể hết retention theo Docker rotation;
+- chưa có exception grouping/issue lifecycle và tìm kiếm xuyên nhiều server;
+- log có thể hết retention theo Docker rotation hoặc Loki retention;
 - container bị remove/recreate hoặc `docker compose down` có thể làm lịch sử log cũ không còn tra được như một kho lưu trữ bền vững;
 - Jaeger sampling phải được cấu hình để trace lỗi quan trọng không bị mất ngoài ý muốn.
 
-Chỉ mở lại quyết định error center khi chuyển sang nhiều host, cần alert/grouping tập trung, retention dài hơn hoặc việc điều tra qua `errorId` + Docker log + Jaeger không còn đáp ứng. Khi đó mới đánh giá Sentry, Loki application logs hoặc OpenSearch; không cài sẵn SDK/DSN/adapter giả ở vòng này.
+Chỉ mở lại quyết định error center khi chuyển sang nhiều host, cần alert/grouping tập trung, retention dài hơn hoặc việc điều tra qua `errorId` + Loki + Jaeger không còn đáp ứng. Khi đó mới đánh giá Sentry/OpenSearch; không cài sẵn SDK/DSN/adapter giả ở vòng này.
 
 Express `logger-service` cũ đã được retire; không biến nó thành hệ thống log production.
 
@@ -51,13 +51,13 @@ Express `logger-service` cũ đã được retire; không biến nó thành hệ
 ### 2.1. Hạ tầng đã dựng
 
 - Root Compose chạy 9 service, nối vào network observability và giữ application log bằng Docker logging driver `local`, rotate `10 MB x 3 file` tại [`compose.yaml`](./compose.yaml).
-- [`logger/compose.yaml`](./logger/compose.yaml) đã có Jaeger `2.20.0`, OTel Collector, Prometheus, Alertmanager, node-exporter, cAdvisor, Redis/PostgreSQL exporters, Loki, Alloy và Grafana.
-- RabbitMQ đã bật plugin `rabbitmq_prometheus`; Prometheus đã scrape được RabbitMQ, Redis, PostgreSQL, host, container và các thành phần observability.
-- Grafana provision Prometheus làm datasource mặc định, cùng Jaeger, Loki và Alertmanager; có dashboard `Infrastructure overview` và `Backend dependencies`.
-- Alloy chỉ chuyển system/infra log vào Loki. Application stdout/stderr không còn dùng Loki để tính latency hoặc làm error center.
+- [`logger/compose.yaml`](./logger/compose.yaml) đã có Jaeger `2.20.0`, OTel Collector, Prometheus, Alertmanager, node-exporter, cAdvisor, blackbox exporter, Redis/PostgreSQL exporters, Loki, Alloy và Grafana.
+- RabbitMQ đã bật plugin `rabbitmq_prometheus`; Prometheus scrape dependency, host, container, application metric và readiness của chín service.
+- Grafana provision Prometheus làm datasource mặc định, cùng Jaeger, Loki và Alertmanager; có dashboard hạ tầng, container, dependency, service reliability và application logs.
+- Alloy chuyển application và system/infra log vào hai Loki scope riêng. Application log không được dùng để tính latency hoặc thay error center.
 - Dashboard request lifecycle và rule LogQL p95/4xx/5xx cũ đã bị retire. File rule cũ chỉ còn tombstone để xóa rule đã provision trước đó.
 - Compose observability chạy bằng wrapper project riêng `nrapp-observability`; wrapper chặn project trùng và `--remove-orphans` để tránh đụng container backend dùng chung network.
-- Prometheus đã nối Alertmanager; cấu hình mặc định dùng receiver `noop`. Repository có example Discord/Telegram/Slack và file `*.local.yaml` được ignore để không commit webhook/token.
+- Prometheus đã nối Alertmanager; cấu hình mặc định dùng receiver `noop`. Repository có receiver kết hợp Discord + Telegram dùng secret files, cùng example riêng cho Discord/Telegram/Slack.
 - Baseline Compose có log rotation, resource limit, stop grace, restart policy và healthcheck tương thích; Collector/Loki distroless được kiểm readiness từ smoke script ngoài container.
 
 ### 2.2. Code ứng dụng đã rollout
@@ -82,7 +82,7 @@ Express `logger-service` cũ đã được retire; không biến nó thành hệ
 
 - Baseline hiện dành cho local/single-host: Jaeger dùng memory, Loki dùng filesystem single-node; chưa có HA, backup/restore và persistent Jaeger production.
 - Chưa chốt retention, disk budget, production sampling, alert owner/contact point, nền tảng deploy và ngưỡng overhead.
-- Chưa nghiệm thu end-to-end một request thật Gateway -> downstream -> DB/RabbitMQ trên production-like environment; smoke test hiện đã xác nhận SDK -> Collector -> Jaeger và 13/13 Prometheus target `UP`.
+- Chưa nghiệm thu end-to-end một request thật Gateway -> downstream -> DB/RabbitMQ trên production-like environment; local runtime đã xác nhận SDK -> Collector -> Jaeger, toàn bộ Prometheus target `UP` và 9/9 readiness probe thành công.
 - Shared core đã nằm trong package, nhưng một số thin Nest wrapper/filter/lifecycle vẫn còn ở từng repo và cần gom tiếp nếu muốn loại hoàn toàn drift.
 - Root `backend` chưa phải Git repository; thay đổi root Compose/Docker/script không có commit gốc. Chín service và `logger` vẫn là các Git repository riêng.
 
@@ -137,7 +137,7 @@ Yêu cầu:
 
 Jaeger là nơi xem waterfall/critical path của từng request. Không tiếp tục tính p95 bằng `durationMs` parse từ log.
 
-Để alert SLO/p95 ổn định ở production, có thể sinh aggregate metric từ OTel/Prometheus. Đây là metric, không phải log và không thay Jaeger. Theo yêu cầu hiện tại, Grafana v1 chỉ provision dashboard hạ tầng; folder `Service reliability` chỉ thêm sau khi được duyệt riêng.
+Alert SLO/p95 dùng aggregate metric từ OTel/Prometheus, không parse log và không thay Jaeger. Grafana đã provision dashboard `Service reliability`; alert baseline hiện có ngưỡng 5xx ratio và p95 kèm điều kiện lưu lượng tối thiểu.
 
 Sampling dự kiến:
 
@@ -444,7 +444,7 @@ Các quyết định production còn mở không chặn baseline local, nhưng p
 
 - [x] Dựng Prometheus, node-exporter, cAdvisor và exporters dependency cần thiết.
 - [x] Provision Prometheus datasource; không để Loki là datasource mặc định cho latency.
-- [ ] **Một phần:** đã có dashboard/alert baseline hạ tầng và dependency; readiness/blackbox/restart/OOM/throttling chưa phủ đủ mục 3.2.
+- [x] Có dashboard/alert baseline hạ tầng, dependency, readiness/blackbox, restart/OOM/throttling và service reliability.
 - [x] Thêm baseline healthcheck/readiness, restart policy, resource limit, stop grace và log rotation cho observability containers.
 - [x] Thêm Alertmanager với receiver mặc định `noop`, datasource Grafana và example Discord/Telegram/Slack không commit secret.
 - [x] Kiểm tra Grafana chỉ hiển thị phạm vi đã duyệt.
@@ -466,12 +466,12 @@ Chỉ thực hiện sau khi parity và rollback window đã đạt:
 - [x] Bỏ Express `logger` khỏi `scripts/dev.mjs` và `LOGGER_HOST_PORT` khỏi env example.
 - [x] Xóa/đổi dashboard `Backend request lifecycle` và alert LogQL p95/5xx cũ.
 - [x] Bỏ `HttpLoggingInterceptor` ghi duration/access log sau khi trace/metric và Gateway request-outcome boundary thay thế.
-- [ ] **Một phần:** Loki đã chỉ nhận system/infra log và tách project/network; storage/auth/HA hardening còn pending.
+- [ ] **Một phần:** Loki đã tách application và system/infra scope; storage/auth/HA hardening còn pending.
 - [ ] Đổi tên thư mục `logger` thành `observability` để đúng trách nhiệm.
 
 ## 7. Production hardening
 
-> Phần HA/sizing/backup/owner vẫn là production backlog. Compose đã có baseline resource limit, log rotation, stop grace, restart policy và health/readiness check; Jaeger vẫn dùng memory, Loki vẫn filesystem và receiver Alertmanager mặc định vẫn là `noop`. Ba override `restart: "no"` đang có sẵn trong worktree local phải được chủ sở hữu bỏ hoặc duyệt trước khi deploy dài hạn.
+> Phần HA/sizing/backup/owner vẫn là production backlog. Compose đã có baseline resource limit, log rotation, stop grace, restart policy và health/readiness check; Jaeger vẫn dùng memory, Loki vẫn filesystem và receiver Alertmanager mặc định vẫn là `noop` cho tới khi secret ngoài Git được cấu hình.
 
 - UI và ingestion endpoint chỉ ở private network/VPN/reverse proxy TLS; không expose thẳng ra Internet.
 - Secret dùng secret manager/Compose secrets/Kubernetes secrets; không commit token/webhook.
@@ -520,7 +520,7 @@ Chỉ thực hiện sau khi parity và rollback window đã đạt:
 
 - [x] Không còn dùng log-derived `durationMs` làm nguồn latency chính trong code đã rollout.
 - [ ] Jaeger hiển thị distributed trace xuyên các boundary chính trên production-like runtime; smoke SDK -> Collector -> Jaeger đã đạt.
-- [ ] Grafana có dashboard host/container/dependency baseline; service availability và alert coverage đầy đủ còn pending.
+- [x] Grafana có dashboard host/container/dependency/service reliability/application log và alert baseline.
 - [ ] Expected `4xx` policy và contract test đủ status đã đạt; runtime acceptance không duplicate downstream còn pending.
 - [ ] Unexpected error contract đã có; cần nghiệm thu Docker log -> `errorId` -> Gateway summary -> Jaeger span trên runtime thật.
 - [x] Error center tập trung được ghi rõ là deferred; không có Sentry SDK/DSN/container/Noop adapter trong phạm vi hiện tại.
@@ -542,8 +542,8 @@ Hướng đã chốt trong lần điều chỉnh này:
 | --- | -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | D1  | Error center               | **Deferred - đã chốt**; không Sentry/SDK/DSN/container/error-vendor Noop adapter                                 |
 | D2  | Unexpected error flow      | **Đã chốt**; origin structured stderr + local `errorId` + Jaeger exception span                                  |
-| D3  | Vai trò Loki               | **Đã triển khai**; chỉ system/infra logs                                                                         |
-| D4  | Grafana scope              | **Baseline đã triển khai**; Prometheus mặc định, dashboard hạ tầng/dependency, không có API latency dashboard    |
+| D3  | Vai trò Loki               | **Đã triển khai**; application và system/infra tách scope, không tính latency                                    |
+| D4  | Grafana scope              | **Đã triển khai**; hạ tầng/dependency/container, service RED/reliability và application logs                     |
 | D5  | Trace backend production   | Local dùng Jaeger 2.20 memory; persistent production backend còn pending                                         |
 | D6  | Shared code                | Local file package `@nrapp/observability`; chưa publish private registry/version pin                             |
 | D7  | Rollout pilot              | Code/build/unit-contract rollout đủ 9 service; runtime acceptance còn pending                                    |
