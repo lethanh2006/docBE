@@ -75,6 +75,11 @@ Cloudflare tự tạo DNS CNAME, **không cần** sửa gì ở phần DNS thủ
 | `prometheus` | `nrapp-observability-prometheus-1` | 9090 | ❌ Không |
 | `alertmanager` | `nrapp-observability-alertmanager-1` | 9093 | ❌ Không |
 | `rabbitmq` | `nrapp-backend-rabbitmq-1` | 15672 | ✅ Có (login RabbitMQ) |
+| `pgadmin` | `nrapp-backend-pgadmin-1` | 8080 | ✅ Có + cấu hình Access cho team |
+
+Để nhiều người cùng xem PostgreSQL qua trình duyệt, dùng
+[hướng dẫn pgAdmin web cho team](HUONG_DAN_PGADMIN_TEAM.md). Route HTTP là
+`pgadmin:8080`; mỗi người dùng tài khoản pgAdmin và role PostgreSQL riêng.
 
 ### PostgreSQL (`payment-postgres`) — TRƯỜNG HỢP ĐẶC BIỆT
 
@@ -97,7 +102,9 @@ Nhưng: để **kết nối** vào TCP hostname này, máy client (ví dụ lapt
 cloudflared access tcp --hostname postgres.thanhlelmtp2006.id.vn --url localhost:5432
 ```
 
-Sau đó kết nối DB tool vào `localhost:5432` như bình thường. Đây là cách an toàn nhất vì bắt buộc phải qua Cloudflare Access (xác thực) mới connect được, không lộ port DB ra internet trần trụi.
+Sau đó kết nối DB tool vào `localhost:5432` như bình thường. Phải tạo thêm Access
+application và policy cho hostname này để yêu cầu xác thực; chọn type TCP tự nó
+không tạo chính sách Access.
 
 **Cách 2 — Không public, chỉ SSH tunnel khi cần**
 
@@ -115,12 +122,14 @@ Rồi connect DB tool vào `localhost:5433` trên máy local.
 
 ## 4. Bảo vệ bằng Cloudflare Access (bắt buộc với service không có login)
 
-Với `jaeger`, `prometheus`, `alertmanager`, và `postgres` (TCP) — các service này không có xác thực riêng, nên **bắt buộc** bật Cloudflare Access:
+Với `jaeger`, `prometheus`, `alertmanager`, bật Cloudflare Access vì không có login
+riêng. Với `postgres` (có xác thực DB) và `pgadmin` dùng cho team, cũng cấu hình
+Access để giới hạn ai được tới service:
 
 1. Zero Trust → **Access → Applications → Add an application**
 2. Chọn loại phù hợp:
    - HTTP service → **Self-hosted**
-   - TCP service (Postgres) → tự động áp dụng khi hostname là loại TCP, cấu hình chung trong **Access → Applications**
+   - TCP service (Postgres) → tạo **Self-hosted** application cho đúng hostname
 3. Chọn đúng hostname vừa tạo
 4. Tạo **Policy**: yêu cầu login bằng email cụ thể của bạn (One-time PIN qua email) hoặc SSO — chặn hết người khác
 
