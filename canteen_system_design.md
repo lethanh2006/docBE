@@ -1,6 +1,11 @@
 # Canteen Management Service - System Design & Business Specification
 
-Tài liệu này đặc tả chi tiết kiến trúc, thiết kế cơ sở dữ liệu, danh sách API và giải thuật áp dụng cho module **Canteen Management** (Dịch vụ Quản lý Nhà ăn) tích hợp trong hệ thống Microservices hiện tại. 
+> **Lưu ý:** tài liệu này mô tả thiết kế ban đầu và có một số phần không còn
+> khớp source hiện tại (ví dụ heap trong RAM và payment callback trong Canteen).
+> Tài liệu theo implementation mới nhất là
+> [Backend Canteen + Payment](GIAI_THICH_LUONG_BACKEND_CANTEEN_PAYMENT.md).
+
+Tài liệu này đặc tả chi tiết kiến trúc, thiết kế cơ sở dữ liệu, danh sách API và giải thuật áp dụng cho module **Canteen Management** (Dịch vụ Quản lý Nhà ăn) tích hợp trong hệ thống Microservices hiện tại.
 
 Hệ thống được thiết kế để giải quyết bài toán nghiệp vụ thực tế tại canteen doanh nghiệp, đồng thời áp dụng tối ưu các cấu trúc dữ liệu và giải thuật (Priority Queue, Heap, Stack) để giải quyết các vấn đề hiệu năng và quy trình nghiệp vụ.
 
@@ -23,7 +28,7 @@ sequenceDiagram
     Staff->>GW: 1. Quét QR & Xem Menu (GET /api/canteen/menu)
     GW->>Canteen: Forward request
     Canteen-->>Staff: Trả về danh sách món ăn
-    
+
     Staff->>GW: 2. Chọn món & Tạo Order (POST /api/canteen/orders)
     GW->>Canteen: Forward order data
     Canteen->>Canteen: Lưu Order (Status: CREATED)
@@ -58,7 +63,9 @@ sequenceDiagram
 ```
 
 ### 1.2 Luồng Thanh Toán (Payment Flow)
+
 Hỗ trợ cả thanh toán trước khi chế biến (Fast-food style) hoặc thanh toán sau khi ăn (Restaurant style). Quy trình tích hợp ví điện tử / VietQR:
+
 1. Client gửi yêu cầu thanh toán (`POST /api/canteen/payments/create-qr`).
 2. Canteen Service sinh link thanh toán hoặc VietQR dynamic image dựa trên Số tiền và Nội dung chuyển khoản (`CANTEEN_ORDER_1001`).
 3. Sau khi người dùng chuyển khoản thành công, Payment Gateway (hoặc một mô phỏng Callback/Webhook) gửi yêu cầu xác nhận tới `POST /api/canteen/payments/callback`.
@@ -71,7 +78,9 @@ Hỗ trợ cả thanh toán trước khi chế biến (Fast-food style) hoặc t
 Tất cả các collection được lưu trữ trong Database `canteen` để đảm bảo tính độc lập dữ liệu theo nguyên tắc Microservices.
 
 ### 2.1 Collection: `tables` (Bàn ăn)
+
 Lưu thông tin vị trí bàn ăn để sinh QR code và quản lý sức chứa.
+
 ```typescript
 {
   _id: ObjectId,
@@ -85,6 +94,7 @@ Lưu thông tin vị trí bàn ăn để sinh QR code và quản lý sức chứ
 ```
 
 ### 2.2 Collection: `categories` (Danh mục thực đơn)
+
 ```typescript
 {
   _id: ObjectId,
@@ -96,6 +106,7 @@ Lưu thông tin vị trí bàn ăn để sinh QR code và quản lý sức chứ
 ```
 
 ### 2.3 Collection: `menu_items` (Món ăn / Đồ uống)
+
 ```typescript
 {
   _id: ObjectId,
@@ -117,7 +128,9 @@ Lưu thông tin vị trí bàn ăn để sinh QR code và quản lý sức chứ
 ```
 
 ### 2.4 Collection: `orders` (Đơn hàng)
+
 Bảng trung tâm lưu trữ thông tin gọi món và trạng thái xử lý.
+
 ```typescript
 {
   _id: ObjectId,
@@ -153,7 +166,9 @@ Bảng trung tâm lưu trữ thông tin gọi món và trạng thái xử lý.
 ```
 
 ### 2.5 Collection: `ingredients` (Kho nguyên liệu)
+
 Quản lý các loại nguyên liệu thô để nấu ăn.
+
 ```typescript
 {
   _id: ObjectId,
@@ -164,7 +179,9 @@ Quản lý các loại nguyên liệu thô để nấu ăn.
 ```
 
 ### 2.6 Collection: `inventory_batches` (Lô hàng trong kho)
+
 Do mỗi đợt nhập hàng có hạn sử dụng khác nhau, ta quản lý theo từng lô (Batch) để áp dụng thuật toán FEFO (First Expired First Out).
+
 ```typescript
 {
   _id: ObjectId,
@@ -187,47 +204,47 @@ Toán bộ API của canteen sẽ được route thông qua Gateway dưới pref
 
 ### 3.1 Nhóm API Thực Đơn (Menu APIs - Menu Module)
 
-| Method | Endpoint | Quyền hạn | Mô tả |
-| :--- | :--- | :--- | :--- |
-| **GET** | `/api/canteen/menu` | Tất cả | Lấy toàn bộ thực đơn đang bán (phân nhóm theo Category). |
-| **POST** | `/api/canteen/admin/menu` | Admin/Manager | Tạo mới món ăn. |
-| **PUT** | `/api/canteen/admin/menu/:id` | Admin/Manager | Cập nhật thông tin món ăn (Lưu trạng thái cũ vào Stack). |
-| **DELETE** | `/api/canteen/admin/menu/:id` | Admin/Manager | Xóa món ăn khỏi menu (Soft delete). |
-| **POST** | `/api/canteen/admin/menu/undo` | Admin/Manager | Hoàn tác (Undo) thao tác sửa đổi vừa thực hiện trên Menu. |
-| **POST** | `/api/canteen/admin/menu/redo` | Admin/Manager | Làm lại (Redo) thao tác vừa hoàn tác trên Menu. |
+| Method     | Endpoint                       | Quyền hạn     | Mô tả                                                     |
+| :--------- | :----------------------------- | :------------ | :-------------------------------------------------------- |
+| **GET**    | `/api/canteen/menu`            | Tất cả        | Lấy toàn bộ thực đơn đang bán (phân nhóm theo Category).  |
+| **POST**   | `/api/canteen/admin/menu`      | Admin/Manager | Tạo mới món ăn.                                           |
+| **PUT**    | `/api/canteen/admin/menu/:id`  | Admin/Manager | Cập nhật thông tin món ăn (Lưu trạng thái cũ vào Stack).  |
+| **DELETE** | `/api/canteen/admin/menu/:id`  | Admin/Manager | Xóa món ăn khỏi menu (Soft delete).                       |
+| **POST**   | `/api/canteen/admin/menu/undo` | Admin/Manager | Hoàn tác (Undo) thao tác sửa đổi vừa thực hiện trên Menu. |
+| **POST**   | `/api/canteen/admin/menu/redo` | Admin/Manager | Làm lại (Redo) thao tác vừa hoàn tác trên Menu.           |
 
 ### 3.2 Nhóm API Đơn Hàng (Order APIs - Order Module)
 
-| Method | Endpoint | Quyền hạn | Mô tả |
-| :--- | :--- | :--- | :--- |
-| **POST** | `/api/canteen/orders` | Nhân viên | Tạo giỏ hàng và đặt món (Trạng thái ban đầu: `CREATED`). |
-| **GET** | `/api/canteen/orders/my-orders` | Nhân viên | Xem lịch sử đơn hàng cá nhân. |
-| **GET** | `/api/canteen/orders/:id` | Nhân viên / Bếp | Lấy thông tin chi tiết của một đơn hàng. |
-| **PATCH** | `/api/canteen/orders/:id/confirm` | Thu ngân / Admin | Xác nhận đơn hàng, tính điểm ưu tiên và gửi sự kiện chế biến. |
-| **PATCH** | `/api/canteen/orders/:id/complete` | Thu ngân / Admin | Xác nhận khách đã nhận món ăn thành công, đóng Order. |
+| Method    | Endpoint                           | Quyền hạn        | Mô tả                                                         |
+| :-------- | :--------------------------------- | :--------------- | :------------------------------------------------------------ |
+| **POST**  | `/api/canteen/orders`              | Nhân viên        | Tạo giỏ hàng và đặt món (Trạng thái ban đầu: `CREATED`).      |
+| **GET**   | `/api/canteen/orders/my-orders`    | Nhân viên        | Xem lịch sử đơn hàng cá nhân.                                 |
+| **GET**   | `/api/canteen/orders/:id`          | Nhân viên / Bếp  | Lấy thông tin chi tiết của một đơn hàng.                      |
+| **PATCH** | `/api/canteen/orders/:id/confirm`  | Thu ngân / Admin | Xác nhận đơn hàng, tính điểm ưu tiên và gửi sự kiện chế biến. |
+| **PATCH** | `/api/canteen/orders/:id/complete` | Thu ngân / Admin | Xác nhận khách đã nhận món ăn thành công, đóng Order.         |
 
 ### 3.3 Nhóm API Nhà Bếp (Kitchen APIs - Kitchen Module)
 
-| Method | Endpoint | Quyền hạn | Mô tả |
-| :--- | :--- | :--- | :--- |
-| **GET** | `/api/canteen/kitchen/queue` | Đầu bếp / Admin | Xem danh sách các đơn hàng đang chờ trong hàng đợi ưu tiên. |
-| **POST** | `/api/canteen/kitchen/next` | Đầu bếp | Lấy đơn hàng có độ ưu tiên cao nhất ra khỏi hàng đợi để chế biến. |
-| **PATCH** | `/api/canteen/kitchen/orders/:id/cooking` | Đầu bếp | Chuyển trạng thái đơn hàng sang `COOKING`. |
-| **PATCH** | `/api/canteen/kitchen/orders/:id/ready` | Đầu bếp | Đánh dấu món ăn đã chuẩn bị xong, chuyển trạng thái `READY`. |
+| Method    | Endpoint                                  | Quyền hạn       | Mô tả                                                             |
+| :-------- | :---------------------------------------- | :-------------- | :---------------------------------------------------------------- |
+| **GET**   | `/api/canteen/kitchen/queue`              | Đầu bếp / Admin | Xem danh sách các đơn hàng đang chờ trong hàng đợi ưu tiên.       |
+| **POST**  | `/api/canteen/kitchen/next`               | Đầu bếp         | Lấy đơn hàng có độ ưu tiên cao nhất ra khỏi hàng đợi để chế biến. |
+| **PATCH** | `/api/canteen/kitchen/orders/:id/cooking` | Đầu bếp         | Chuyển trạng thái đơn hàng sang `COOKING`.                        |
+| **PATCH** | `/api/canteen/kitchen/orders/:id/ready`   | Đầu bếp         | Đánh dấu món ăn đã chuẩn bị xong, chuyển trạng thái `READY`.      |
 
 ### 3.4 Nhóm API Quản Lý Kho (Inventory APIs - Inventory Module)
 
-| Method | Endpoint | Quyền hạn | Mô tả |
-| :--- | :--- | :--- | :--- |
-| **POST** | `/api/canteen/inventory/ingredients` | Admin | Khởi tạo nguyên liệu mới. |
-| **POST** | `/api/canteen/inventory/batches` | Admin | Nhập lô hàng mới (đẩy vào Min Heap quản lý hạn sử dụng). |
-| **GET** | `/api/canteen/inventory/expiry-alerts` | Admin / Đầu bếp | Lấy danh sách nguyên liệu sắp hết hạn cần sử dụng trước (Min Heap). |
-| **POST** | `/api/canteen/inventory/consume` | Đầu bếp | Khấu trừ nguyên liệu sau khi nấu ăn (tự động trừ lô hết hạn trước). |
+| Method   | Endpoint                               | Quyền hạn       | Mô tả                                                               |
+| :------- | :------------------------------------- | :-------------- | :------------------------------------------------------------------ |
+| **POST** | `/api/canteen/inventory/ingredients`   | Admin           | Khởi tạo nguyên liệu mới.                                           |
+| **POST** | `/api/canteen/inventory/batches`       | Admin           | Nhập lô hàng mới (đẩy vào Min Heap quản lý hạn sử dụng).            |
+| **GET**  | `/api/canteen/inventory/expiry-alerts` | Admin / Đầu bếp | Lấy danh sách nguyên liệu sắp hết hạn cần sử dụng trước (Min Heap). |
+| **POST** | `/api/canteen/inventory/consume`       | Đầu bếp         | Khấu trừ nguyên liệu sau khi nấu ăn (tự động trừ lô hết hạn trước). |
 
 ### 3.5 Nhóm API Báo Cáo & Phân Tích (Analytics APIs - Analytics Module)
 
-| Method | Endpoint | Quyền hạn | Mô tả |
-| :--- | :--- | :--- | :--- |
+| Method  | Endpoint                            | Quyền hạn       | Mô tả                                                       |
+| :------ | :---------------------------------- | :-------------- | :---------------------------------------------------------- |
 | **GET** | `/api/canteen/analytics/top-dishes` | Admin / Manager | Trả về Top K món ăn bán chạy nhất (sử dụng Top-K Min Heap). |
 
 ---
@@ -241,14 +258,17 @@ Toán bộ API của canteen sẽ được route thông qua Gateway dưới pref
 Trong giờ cao điểm, hàng trăm khách hàng đặt món cùng lúc. Nhà bếp cần ưu tiên phục vụ các đối tượng đặc biệt (VIP, Ban giám đốc), các đơn hàng mang đi gấp (Express), hoặc các đơn hàng đã chờ đợi quá lâu để đảm bảo trải nghiệm khách hàng.
 
 #### Công thức tính điểm ưu tiên (Priority Score):
+
 $$\text{Score} = (\text{userRoleScore} \times 100) + (\text{isTakeaway} \times 50) + (\text{waitingMinutes} \times 1.5)$$
 
-*Chi tiết tham số:*
+_Chi tiết tham số:_
+
 - **userRoleScore**: Khách VIP / BGĐ = 2, Quản lý / Manager = 1, Nhân viên thông thường = 0.
 - **isTakeaway**: Đơn mang đi gấp = 1, Ăn tại bàn = 0.
 - **waitingMinutes**: Số phút trôi qua kể từ khi đơn hàng được tạo (`CREATED`). Điểm này tăng dần theo thời gian thực để tránh tình trạng đơn hàng bình thường bị "đói" (starvation) vô hạn khi liên tục có đơn VIP chen ngang.
 
 #### Cấu trúc dữ liệu Node trong Heap:
+
 ```typescript
 interface KitchenOrderNode {
   orderId: string;
@@ -259,6 +279,7 @@ interface KitchenOrderNode {
 ```
 
 #### Thiết kế giải thuật Max Heap trong `kitchen/priority-queue.ts`:
+
 ```typescript
 export class KitchenPriorityQueue {
   private heap: KitchenOrderNode[] = [];
@@ -279,7 +300,7 @@ export class KitchenPriorityQueue {
     if (this.size() === 0) return null;
     const root = this.heap[0];
     const lastNode = this.heap.pop()!;
-    
+
     if (this.size() > 0) {
       this.heap[0] = lastNode;
       this.siftDown(0);
@@ -315,11 +336,16 @@ export class KitchenPriorityQueue {
       let rightChild = current * 2 + 2;
       let largest = current;
 
-      if (this.heap[leftChild].priorityScore > this.heap[largest].priorityScore) {
+      if (
+        this.heap[leftChild].priorityScore > this.heap[largest].priorityScore
+      ) {
         largest = leftChild;
       }
 
-      if (rightChild < length && this.heap[rightChild].priorityScore > this.heap[largest].priorityScore) {
+      if (
+        rightChild < length &&
+        this.heap[rightChild].priorityScore > this.heap[largest].priorityScore
+      ) {
         largest = rightChild;
       }
 
@@ -343,7 +369,9 @@ export class KitchenPriorityQueue {
   refreshPriorities(): void {
     const now = new Date();
     for (let i = 0; i < this.heap.length; i++) {
-      const waitTimeMinutes = Math.floor((now.getTime() - this.heap[i].confirmedAt.getTime()) / 60000);
+      const waitTimeMinutes = Math.floor(
+        (now.getTime() - this.heap[i].confirmedAt.getTime()) / 60000,
+      );
       // Giữ nguyên phần điểm cố định (Role, Takeaway), cộng thêm điểm chờ đợi mới
       // Giả sử điểm cố định ban đầu đã được lưu riêng hoặc tính toán lại từ Database
     }
@@ -362,17 +390,19 @@ export class KitchenPriorityQueue {
 Khi quản trị viên (Admin/Manager) chỉnh sửa thông tin món ăn hoặc cấu hình giá cả thực đơn, họ có thể thao tác sai sót. Việc xây dựng tính năng **Undo / Redo** (Hoàn tác / Làm lại) giúp khôi phục dữ liệu nhanh chóng mà không cần reload hoặc truy vấn phức tạp vào database.
 
 #### Nguyên lý hoạt động:
+
 - **Undo Stack**: Chứa danh sách các trạng thái thay đổi đã thực hiện (mỗi thao tác là một Command).
 - **Redo Stack**: Chứa các trạng thái đã bị Undo để có thể khôi phục lại khi cần.
 - Nếu người dùng thực hiện một thao tác chỉnh sửa mới, **Redo Stack** sẽ bị xóa sạch (để đảm bảo luồng lịch sử tuyến tính).
 
 #### Thiết kế Command Pattern & Stack trong `menu/undo-stack.ts`:
+
 ```typescript
 export interface MenuCommand {
-  type: 'CREATE' | 'UPDATE' | 'DELETE';
+  type: "CREATE" | "UPDATE" | "DELETE";
   menuItemId: string;
   previousData: any; // Trạng thái dữ liệu trước khi thay đổi (Dành cho Undo)
-  newData: any;      // Trạng thái dữ liệu sau khi thay đổi (Dành cho Redo)
+  newData: any; // Trạng thái dữ liệu sau khi thay đổi (Dành cho Redo)
 }
 
 export class MenuHistoryManager {
@@ -419,6 +449,7 @@ export class MenuHistoryManager {
 Quy tắc bất di bất dịch trong quản lý thực phẩm là **FEFO (First Expired First Out - Hàng sắp hết hạn dùng trước)** để tránh lãng phí nguyên liệu hư hỏng.
 
 #### Cấu trúc dữ liệu Node lô hàng:
+
 ```typescript
 interface InventoryBatchNode {
   batchId: string;
@@ -429,6 +460,7 @@ interface InventoryBatchNode {
 ```
 
 #### Thiết kế giải thuật Min Heap trong `inventory/min-heap.ts`:
+
 ```typescript
 export class InventoryMinHeap {
   private heap: InventoryBatchNode[] = [];
@@ -463,7 +495,10 @@ export class InventoryMinHeap {
     let current = index;
     while (current > 0) {
       const parent = Math.floor((current - 1) / 2);
-      if (this.heap[current].expiryDate.getTime() >= this.heap[parent].expiryDate.getTime()) {
+      if (
+        this.heap[current].expiryDate.getTime() >=
+        this.heap[parent].expiryDate.getTime()
+      ) {
         break;
       }
       this.swap(current, parent);
@@ -480,11 +515,18 @@ export class InventoryMinHeap {
       let rightChild = current * 2 + 2;
       let smallest = current;
 
-      if (this.heap[leftChild].expiryDate.getTime() < this.heap[smallest].expiryDate.getTime()) {
+      if (
+        this.heap[leftChild].expiryDate.getTime() <
+        this.heap[smallest].expiryDate.getTime()
+      ) {
         smallest = leftChild;
       }
 
-      if (rightChild < length && this.heap[rightChild].expiryDate.getTime() < this.heap[smallest].expiryDate.getTime()) {
+      if (
+        rightChild < length &&
+        this.heap[rightChild].expiryDate.getTime() <
+          this.heap[smallest].expiryDate.getTime()
+      ) {
         smallest = rightChild;
       }
 
@@ -525,6 +567,7 @@ export class InventoryMinHeap {
 Nếu canteen có hàng trăm món, thay vì truy vấn toàn bộ và thực hiện sắp xếp (Sort) tốn tài nguyên $O(N \log N)$, chúng ta sử dụng một **Min Heap kích thước tối đa là K** để lọc ra Top K món ăn bán chạy nhất với độ phức tạp tối ưu hơn nhiều: $O(N \log K)$.
 
 #### Nguyên lý giải thuật:
+
 1. Thống kê số lượng bán của tất cả món ăn trong một Map: `Map<menuItemId, salesCount>`.
 2. Duyệt qua từng cặp `(menuItemId, salesCount)` trong Map:
    - Đẩy phần tử vào Min Heap (sắp xếp theo `salesCount` tăng dần).
@@ -532,6 +575,7 @@ Nếu canteen có hàng trăm món, thay vì truy vấn toàn bộ và thực hi
 3. Sau khi duyệt hết tất cả các món ăn, các phần tử còn lại trong Min Heap chính là Top K món ăn bán chạy nhất.
 
 #### Thiết kế Heap Node bán chạy:
+
 ```typescript
 interface DishSalesNode {
   menuItemId: string;
@@ -541,6 +585,7 @@ interface DishSalesNode {
 ```
 
 #### Thiết kế giải thuật tìm Top-K trong `analytics/top-k-heap.ts`:
+
 ```typescript
 export class TopKActiveHeap {
   private heap: DishSalesNode[] = [];
@@ -588,7 +633,7 @@ export class TopKActiveHeap {
     // Clone heap để pop dần tránh làm mất dữ liệu gốc
     const tempHeap = new TopKActiveHeap(this.K);
     tempHeap.heap = [...this.heap];
-    
+
     while (tempHeap.size() > 0) {
       result.push(tempHeap.pop()!);
     }
@@ -621,7 +666,10 @@ export class TopKActiveHeap {
         smallest = leftChild;
       }
 
-      if (rightChild < length && this.heap[rightChild].salesCount < this.heap[smallest].salesCount) {
+      if (
+        rightChild < length &&
+        this.heap[rightChild].salesCount < this.heap[smallest].salesCount
+      ) {
         smallest = rightChild;
       }
 
@@ -649,6 +697,7 @@ export class TopKActiveHeap {
 Trong phần 4.3, chúng ta đã xây dựng cấu trúc `InventoryMinHeap` để quản lý các lô hàng theo hạn sử dụng. Khi đầu bếp chế biến một đơn hàng (`POST /api/canteen/inventory/consume`), hệ thống cần tự động tính toán và khấu trừ số lượng nguyên liệu từ các lô cận date nhất đến các lô mới hơn, đồng thời cảnh báo khi kho chạm ngưỡng tối thiểu.
 
 #### Nguyên lý giải thuật:
+
 1. Lấy danh sách nguyên liệu cần dùng cho món ăn (ví dụ: món "Cơm gà" cần `500g` Thịt gà).
 2. Lấy danh sách các lô hàng active của nguyên liệu đó, sắp xếp theo `expiryDate` tăng dần (sử dụng `InventoryMinHeap`).
 3. Duyệt qua từng lô hàng:
@@ -657,12 +706,13 @@ Trong phần 4.3, chúng ta đã xây dựng cấu trúc `InventoryMinHeap` đ�
 4. Sau khi khấu trừ, kiểm tra tổng tồn kho còn lại của nguyên liệu: nếu $\le \text{minimumThreshold}$, phát sự kiện `inventory.low_stock` sang RabbitMQ.
 
 #### Thiết kế giải thuật trong `inventory/fefo-consumption.ts`:
+
 ```typescript
 export interface BatchConsumptionResult {
   batchId: string;
   consumedQuantity: number;
   remainingBatchQuantity: number;
-  status: 'ACTIVE' | 'DEPLETED';
+  status: "ACTIVE" | "DEPLETED";
 }
 
 export interface InventoryDeductionReport {
@@ -682,7 +732,7 @@ export class FEFOConsumptionService {
     ingredientId: string,
     requiredAmount: number,
     minHeap: InventoryMinHeap,
-    minimumThreshold: number
+    minimumThreshold: number,
   ): InventoryDeductionReport {
     let remainingNeeded = requiredAmount;
     const affectedBatches: BatchConsumptionResult[] = [];
@@ -690,7 +740,7 @@ export class FEFOConsumptionService {
 
     // Clone Heap để thực hiện khấu trừ tuyến tính
     const sortedBatches = minHeap.getSortedBatches();
-    
+
     for (const batch of sortedBatches) {
       totalStockBefore += batch.quantity;
     }
@@ -702,13 +752,13 @@ export class FEFOConsumptionService {
       batch.quantity -= deductAmount;
       remainingNeeded -= deductAmount;
 
-      const newStatus = batch.quantity === 0 ? 'DEPLETED' : 'ACTIVE';
-      
+      const newStatus = batch.quantity === 0 ? "DEPLETED" : "ACTIVE";
+
       affectedBatches.push({
         batchId: batch.batchId,
         consumedQuantity: deductAmount,
         remainingBatchQuantity: batch.quantity,
-        status: newStatus
+        status: newStatus,
       });
     }
 
@@ -721,7 +771,7 @@ export class FEFOConsumptionService {
       totalConsumed,
       isFullyFulfilled: remainingNeeded === 0,
       affectedBatches,
-      isLowStockAlert: remainingTotalStock <= minimumThreshold
+      isLowStockAlert: remainingTotalStock <= minimumThreshold,
     };
   }
 }
@@ -736,6 +786,7 @@ Vào giờ cao điểm, khách hàng tìm kiếm món ăn trên ứng dụng di 
 Chúng ta xây dựng cấu trúc **Trie (Cây tiền tố)** lưu trữ trong RAM của Canteen Service để hỗ trợ tìm kiếm món ăn với độ phức tạp cực kỳ tối ưu: $O(L)$ với $L$ là độ dài từ khóa tìm kiếm.
 
 #### Cấu trúc Node và Trie Tree trong `menu/menu-trie.ts`:
+
 ```typescript
 class TrieNode {
   children: Map<string, TrieNode> = new Map();
@@ -749,10 +800,10 @@ export class MenuSearchTrie {
   // Chuyển đổi tiếng Việt có dấu sang không dấu & viết thường để search linh hoạt
   private normalizeText(text: string): string {
     return text
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/đ/g, 'd')
-      .replace(/Đ/g, 'D')
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .replace(/Đ/g, "D")
       .toLowerCase()
       .trim();
   }
@@ -764,7 +815,7 @@ export class MenuSearchTrie {
 
     // Index cả tên đầy đủ lẫn từng từ đơn (vd: "Cơm Gà" -> index "com ga" và "ga")
     for (let i = 0; i < words.length; i++) {
-      const phrase = words.slice(i).join(' ');
+      const phrase = words.slice(i).join(" ");
       this.insertPhrase(phrase, menuItemId);
     }
   }
@@ -810,6 +861,7 @@ export class MenuSearchTrie {
 Khi một nhóm nhân viên đi ăn cùng nhau (ví dụ: nhóm 6 người, 8 người), hệ thống cần tự động gợi ý bàn trống phù hợp hoặc tính toán phương án **gộp các bàn trống liền kề** sao cho tối ưu số chỗ thừa (capacity waste) và giảm thiểu số bàn phải gộp.
 
 #### Nguyên lý giải thuật Greedy:
+
 1. **Trường hợp 1 (Single Table)**: Tìm bàn trống đơn có sức chứa `capacity >= partySize` sao cho `(capacity - partySize)` nhỏ nhất (Best-fit).
 2. **Trường hợp 2 (Table Merging)**: Nếu không có bàn đơn nào đủ sức chứa, áp dụng giải thuật Tham ăn (Greedy) kết hợp Gom nhóm:
    - Lọc danh sách tất cả bàn trống (`status == 'empty'`).
@@ -817,6 +869,7 @@ Khi một nhóm nhân viên đi ăn cùng nhau (ví dụ: nhóm 6 người, 8 ng
    - Lựa chọn các bàn sao cho tổng sức chứa $\ge \text{partySize}$ với số lượng bàn ít nhất.
 
 #### Thiết kế giải thuật trong `table/table-allocation.ts`:
+
 ```typescript
 export interface TableAllocationResult {
   allocatedTableIds: string[];
@@ -830,11 +883,14 @@ export interface TableItem {
   id: string;
   name: string;
   capacity: number;
-  status: 'empty' | 'occupied' | 'reserved';
+  status: "empty" | "occupied" | "reserved";
 }
 
 export class TableAllocationService {
-  static allocateTables(emptyTables: TableItem[], partySize: number): TableAllocationResult | null {
+  static allocateTables(
+    emptyTables: TableItem[],
+    partySize: number,
+  ): TableAllocationResult | null {
     if (emptyTables.length === 0 || partySize <= 0) return null;
 
     // 1. Tìm Best-Fit cho bàn đơn
@@ -857,13 +913,15 @@ export class TableAllocationService {
         totalCapacity: bestSingleTable.capacity,
         partySize,
         isMerged: false,
-        wasteCapacity: minWaste
+        wasteCapacity: minWaste,
       };
     }
 
     // 2. Nếu không bàn đơn nào vừa, thực hiện gộp bàn (Greedy Strategy)
     // Sắp xếp bàn trống giảm dần theo capacity
-    const sortedTables = [...emptyTables].sort((a, b) => b.capacity - a.capacity);
+    const sortedTables = [...emptyTables].sort(
+      (a, b) => b.capacity - a.capacity,
+    );
     const selectedTables: TableItem[] = [];
     let currentCapacity = 0;
 
@@ -877,7 +935,7 @@ export class TableAllocationService {
           totalCapacity: currentCapacity,
           partySize,
           isMerged: true,
-          wasteCapacity: currentCapacity - partySize
+          wasteCapacity: currentCapacity - partySize,
         };
       }
     }
@@ -895,6 +953,7 @@ export class TableAllocationService {
 Doanh nghiệp thường có chính sách trợ giá bữa ăn cho nhân viên (ví dụ: Trợ giá 30,000 VND / ngày cho nhân viên chính thức, giảm 15% cho đơn trị giá $> 100,000$ VND, hoặc mã Voucher giảm tối đa 50,000 VND). Giải thuật tính toán giá trị cuối cùng (`finalAmount`) sẽ đảm bảo áp dụng các quy tắc ưu đãi đúng thứ tự và chính xác.
 
 #### Công thức & Thứ tự tính toán:
+
 1. `rawTotal`: Tổng tiền các món ăn và các tùy chọn chọn thêm.
 2. `categoryDiscount`: Giảm giá theo danh mục món ăn (nếu món thuộc danh mục khuyến mãi).
 3. `voucherDiscount`: Giảm giá theo mã Coupon (phần trăm hoặc cố định, có giới hạn tối đa `maxDiscount`).
@@ -902,13 +961,14 @@ Doanh nghiệp thường có chính sách trợ giá bữa ăn cho nhân viên (
 5. $\text{finalAmount} = \max(0, \text{rawTotal} - \text{categoryDiscount} - \text{voucherDiscount} - \text{allowanceSubsidy})$.
 
 #### Thiết kế giải thuật trong `order/discount-calculator.ts`:
+
 ```typescript
 export interface DiscountRule {
   voucherCode?: string;
-  discountPercent?: number;    // % giảm (vd: 10%)
-  flatDiscount?: number;       // Số tiền giảm cố định (vd: 20000)
-  maxDiscountAmount?: number;  // Giảm tối đa
-  minOrderAmount?: number;     // Đơn hàng tối thiểu để áp dụng
+  discountPercent?: number; // % giảm (vd: 10%)
+  flatDiscount?: number; // Số tiền giảm cố định (vd: 20000)
+  maxDiscountAmount?: number; // Giảm tối đa
+  minOrderAmount?: number; // Đơn hàng tối thiểu để áp dụng
   dailySubsidyAmount?: number; // Tiền trợ giá ngày của công ty
 }
 
@@ -924,7 +984,7 @@ export interface CalculationResult {
 export class OrderDiscountCalculator {
   static calculateFinalPrice(
     items: { unitPrice: number; quantity: number; optionsPrice: number }[],
-    rule?: DiscountRule
+    rule?: DiscountRule,
   ): CalculationResult {
     // 1. Tính tổng tiền gốc
     const rawTotal = items.reduce((sum, item) => {
@@ -965,7 +1025,7 @@ export class OrderDiscountCalculator {
       voucherDiscount,
       subsidyAmount,
       totalDiscount,
-      finalAmount
+      finalAmount,
     };
   }
 }

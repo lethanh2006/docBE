@@ -379,7 +379,9 @@ Envelope:
 
 Outbox publisher dùng confirm channel và chỉ ghi `published_at` sau
 `waitForConfirms()`. Khi broker lỗi, record vẫn ở PostgreSQL và được retry với
-backoff.
+backoff. `PAYMENT_OUTBOX_MAX_ATTEMPTS=0` là mặc định và có nghĩa retry vô hạn;
+chỉ đặt số dương khi vận hành đã có cảnh báo và quy trình re-drive row
+`failed_at`.
 
 Canteen consumer:
 
@@ -457,17 +459,18 @@ Response tạo QR:
 
 ### 12.3 VietQR và worker
 
-| Biến                         | Ví dụ               |
-| ---------------------------- | ------------------- |
-| `VIETQR_BANK_ID`             | `OCB`               |
-| `VIETQR_ACCOUNT_NUMBER`      | tài khoản nhận thật |
-| `VIETQR_ACCOUNT_NAME`        | tên chủ tài khoản   |
-| `VIETQR_TEMPLATES`           | `compact2` hoặc CSV |
-| `VIETQR_DESCRIPTION_PREFIX`  | `NRAPP PAY`         |
-| `PAYMENT_CODE_PREFIX`        | `NRP`               |
-| `PAYMENT_INTENT_TTL_MINUTES` | `15`                |
-| `PAYMENT_EXPIRY_INTERVAL_MS` | `60000`             |
-| `PAYMENT_OUTBOX_INTERVAL_MS` | `1000`              |
+| Biến                          | Ví dụ               |
+| ----------------------------- | ------------------- |
+| `VIETQR_BANK_ID`              | `OCB`               |
+| `VIETQR_ACCOUNT_NUMBER`       | tài khoản nhận thật |
+| `VIETQR_ACCOUNT_NAME`         | tên chủ tài khoản   |
+| `VIETQR_TEMPLATES`            | `compact2` hoặc CSV |
+| `VIETQR_DESCRIPTION_PREFIX`   | `NRAPP PAY`         |
+| `PAYMENT_CODE_PREFIX`         | `NRP`               |
+| `PAYMENT_INTENT_TTL_MINUTES`  | `15`                |
+| `PAYMENT_EXPIRY_INTERVAL_MS`  | `60000`             |
+| `PAYMENT_OUTBOX_INTERVAL_MS`  | `1000`              |
+| `PAYMENT_OUTBOX_MAX_ATTEMPTS` | `0` (retry vô hạn)  |
 
 ### 12.4 RabbitMQ
 
