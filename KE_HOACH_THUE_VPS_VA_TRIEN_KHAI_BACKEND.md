@@ -1,10 +1,12 @@
 # Kế hoạch thuê VPS và thực hành triển khai backend NRApp
 
-Ngày lập: **11/09/2026**. Căn cứ: mã nguồn và cấu hình hiện có trong `backend/`, đã đọc [CLAUDE.md](../backend/CLAUDE.md).
+Ngày lập: **11/09/2026**. Cập nhật phạm vi không deploy Payment: **15/09/2026**. Căn cứ: mã nguồn và cấu hình hiện có trong `backend/`, đã đọc [CLAUDE.md](../backend/CLAUDE.md).
 
-**Phương án tiết kiệm được chọn:** một VPS **Linux Ubuntu 24.04 LTS x86_64, 2 vCPU/4 GB RAM**, Docker Compose chạy đủ **9 app + 3 hạ tầng + 3 giám sát = 15 container**. MongoDB Atlas đặt ngoài VPS; Nginx trên host làm cửa vào HTTPS. Giữ code/thư viện logger để dùng ở local; trên VPS chỉ chạy Prometheus, Grafana và Node Exporter. Bắt đầu với dữ liệu lab, tải thấp và một instance mỗi service.
+**Phương án hiện tại:** một VPS **Linux Ubuntu 24.04 LTS x86_64, 2 vCPU/4 GB RAM**, Docker Compose chỉ chạy **8 app + 2 hạ tầng + 3 giám sát = 13 container**. **Chưa build/chạy `payment`, `payment-postgres`, pgAdmin và chưa cấu hình Casso** vì tài khoản Casso đang hết hạn. MongoDB Atlas đặt ngoài VPS; Nginx trên host làm cửa vào HTTPS. Giữ source Payment trong repository để triển khai ở giai đoạn sau.
 
-**Cấu hình mua mục tiêu: 2 vCPU, 4 GB RAM, SSD/NVMe khoảng 50–60 GB, thêm 2 GB swap.** Ưu tiên build image ở máy cá nhân rồi chuyển lên VPS, không bật pgAdmin thường trực. Đây là cấu hình để thử nghiệm chi phí thấp, **chưa có benchmark chứng minh 9 app chạy ổn với giới hạn bên dưới**. Giữ đủ service, đo từng bước và điều chỉnh ngân sách RAM nếu có OOM; không cam kết số user hoặc khẳng định container nào chắc chắn bị kill trước.
+**Cấu hình mua mục tiêu: 2 vCPU, 4 GB RAM, SSD/NVMe khoảng 50–60 GB, thêm 2 GB swap.** Ưu tiên build 8 image ở máy cá nhân rồi chuyển lên VPS. Đây là cấu hình thử nghiệm chi phí thấp, **chưa có benchmark chứng minh 8 app chạy ổn với giới hạn bên dưới**. Đo từng bước và điều chỉnh ngân sách RAM nếu có OOM; không cam kết số user.
+
+> **Phạm vi lỗi được chấp nhận:** mọi URL `/api/payment` sẽ chủ động trả **HTTP 503 `PAYMENT_TEMPORARILY_DISABLED`** tại Nginx. Các luồng Auth/User/Mail/Chat/Todo/Workschedule/Canteen vẫn được triển khai và kiểm thử riêng. Khi tạo đơn Canteen trong giai đoạn này phải dùng `paymentMethod=CASH`; đơn `VIETQR` sẽ ở `PENDING` và không thể đi tiếp vì không có Payment phát sự kiện xác nhận.
 
 Tài liệu này là kế hoạch và các mẫu để bạn thực hiện sau khi thuê VPS. **Việc tạo tài liệu chưa sửa source, chưa tạo VPS, chưa triển khai và chưa kiểm thử trên VPS thật.** Những cấu hình mới như `compose.vps.yaml` dưới đây là file bạn sẽ tạo trong quá trình thực hành.
 
@@ -31,7 +33,7 @@ Tài liệu này là kế hoạch và các mẫu để bạn thực hiện sau k
 
 ## 1. Backend hiện có những gì
 
-### 1.1. Chín service ứng dụng
+### 1.1. Source có chín service, đợt này chỉ deploy tám
 
 | Service | Port container | Vai trò và phụ thuộc thấy trong source | Kiểm tra trên VPS |
 |---|---:|---|---|
@@ -43,7 +45,7 @@ Tài liệu này là kế hoạch và các mẫu để bạn thực hiện sau k
 | `todo` | 5003 | MongoDB và User API có chữ ký nội bộ | `/health/ready` |
 | `workschedule` | 5004 | MongoDB, User API, lịch/duyệt yêu cầu/chấm công | `/health/ready` |
 | `canteen` | 5005 | MongoDB, Redis, RabbitMQ, đơn hàng, kho, bếp, bàn, báo cáo | `/health/ready` kiểm tra MongoDB/Redis/RabbitMQ |
-| `payment` | 5006 | PostgreSQL/TypeORM, VietQR, Casso V2, RabbitMQ/outbox | `/health/ready` |
+| `payment` | 5006 | PostgreSQL/TypeORM, VietQR, Casso V2, RabbitMQ/outbox | **Không deploy đợt này** |
 
 `user`, `chat`, `todo`, `workschedule` có readiness MongoDB; không suy ra rằng tất cả API upstream và mọi nghiệp vụ đã hoạt động chỉ từ kết quả đó.
 
@@ -60,48 +62,45 @@ Các file đối chiếu chính:
 |---|---|---|
 | Redis | Compose, AOF bật, volume `redis_data` | Lưu OTP, phiên refresh và dữ liệu Redis của ứng dụng; mất Redis có thể buộc đăng nhập lại |
 | RabbitMQ | Compose, management UI, volume `rabbitmq_data` | Đưa mail, đồng bộ profile, sự kiện thanh toán qua queue |
-| PostgreSQL | Service `payment-postgres`, volume `payment_postgres_data` | Dữ liệu Payment; host port mặc định **5433**, container port **5432** |
+| PostgreSQL | Có service `payment-postgres` trong Compose gốc | **Không khởi động và chưa tạo volume dữ liệu trong đợt này** |
 | MongoDB | **Chưa có trong Compose** | Tạo Atlas riêng cho lab hoặc tự dựng replica set ở giai đoạn sau |
 | Cloudinary | Dịch vụ bên ngoài | Ảnh chat không nằm trong volume của VPS |
 | SMTP | Dịch vụ bên ngoài | Đăng nhập email phụ thuộc gửi OTP thực sự thành công |
-| pgAdmin | Profile `admin`, mặc định chưa chạy | Chỉ mở khi cần qua SSH tunnel |
+| pgAdmin | Profile `admin`, mặc định chưa chạy | Không mở trong đợt này vì PostgreSQL Payment cũng đang tắt |
 
 MongoDB có điểm đặc biệt: Chat/Todo/Workschedule cố định `dbName: 'nrapp'`; Auth/User cho phép `MONGO_DB_NAME`, mặc định `nrapp`; Canteen lấy database theo URI. Vì vậy **dùng một Atlas cluster lab riêng, database `nrapp`, và đặt URI `/nrapp` nhất quán**. Đổi riêng URI sang `/nrapp_staging` chưa tách được toàn bộ service khỏi database cũ.
 
 Canteen xuất kho và Workschedule duyệt lịch dùng `startSession()`/`withTransaction()`. MongoDB standalone không đáp ứng transaction nhiều document; chọn replica set/Atlas. Một replica set một node chỉ phục vụ bài học tự vận hành, không tạo khả năng chịu lỗi. [MongoDB: yêu cầu cho transactions](https://www.mongodb.com/docs/manual/core/transactions-production-consideration/).
 
-### 1.3. Cắt giám sát từ 13 xuống đúng 3 container
+### 1.3. Cắt giám sát từ 12 xuống đúng 3 container
 
-[Compose logger](../backend/logger/compose.yaml) chứa **13 container**: Jaeger, OTel Collector, Prometheus, Alertmanager, Node Exporter, cAdvisor, Blackbox Exporter, Redis Exporter, PostgreSQL Exporter, Loki, Alloy, Grafana.
+[Compose logger](../backend/logger/compose.yaml) chứa **12 container**: Jaeger, OTel Collector, Prometheus, Alertmanager, Node Exporter, cAdvisor, Blackbox Exporter, Redis Exporter, PostgreSQL Exporter, Loki, Alloy, Grafana.
 
-VPS chỉ giữ **Prometheus + Grafana + Node Exporter**. Không chạy Jaeger, OTel Collector, Alertmanager, cAdvisor, Blackbox Exporter, Redis Exporter, PostgreSQL Exporter, Loki hoặc Alloy. Tổng mới **15 container**, giảm 10 container so với cấu hình đầy đủ 25. Giữ MongoDB ở Atlas, pgAdmin tắt mặc định; dùng công cụ DB trên máy cá nhân qua SSH tunnel khi cần.
+VPS chỉ giữ **Prometheus + Grafana + Node Exporter**. Không chạy Jaeger, OTel Collector, Alertmanager, cAdvisor, Blackbox Exporter, Redis Exporter, PostgreSQL Exporter, Loki hoặc Alloy. Cộng với 8 app, Redis và RabbitMQ, tổng đang chạy là **13 container**. Giữ MongoDB ở Atlas; không chạy PostgreSQL/pgAdmin cho đến khi khôi phục Payment.
 
 **Không dùng** `node scripts/observability-compose.mjs up -d prometheus grafana node-exporter` để rút gọn: Compose gốc có `depends_on` kéo theo nhiều service khác, đồng thời Prometheus/Grafana còn trỏ tới các nguồn dữ liệu bị bỏ. Bước 9 tạo file **độc lập** `logger/compose.vps-minimal.yaml`; không merge file đó với `logger/compose.yaml`. [Docker: thứ tự và phụ thuộc khởi động](https://docs.docker.com/compose/how-tos/startup-order/).
 
-Giữ structured log JSON ra stdout và đọc bằng `dc logs`; đặt `OTEL_SDK_DISABLED=true` trên đủ 9 app để không khởi động SDK/exporter tới Collector đã tắt. Thư viện vẫn được import theo code hiện tại nên không coi chi phí instrumentation đã về 0. Giới hạn `OBSERVABILITY_MEMORY_LIMIT=1g` của stack đầy đủ không dùng cho cấu hình mới; thay bằng limit từng container và ngân sách tổng ở mục 2.4.
+Giữ structured log JSON ra stdout và đọc bằng `dc logs`; đặt `OTEL_SDK_DISABLED=true` trên đủ 8 app được triển khai để không khởi động SDK/exporter tới Collector đã tắt. Thư viện vẫn được import theo code hiện tại nên không coi chi phí instrumentation đã về 0.
 
 ### 1.4. Kiến trúc mục tiêu của bài thực hành
 
 ```mermaid
 flowchart TD
     Client[Web / điện thoại / Postman] -->|HTTPS 443| Nginx[Nginx trên VPS]
-    Casso[Casso webhook] -->|HTTPS POST| Nginx
     Nginx -->|127.0.0.1:3000| Gateway[Gateway]
+    Nginx -.->|/api/payment: HTTP 503| Disabled[Payment tạm tắt]
     Gateway --> Auth[Auth]
     Gateway --> User[User]
     Gateway --> Chat[Chat HTTP và Socket.IO]
     Gateway --> Todo[Todo]
     Gateway --> Work[Workschedule]
     Gateway --> Canteen[Canteen]
-    Gateway --> Payment[Payment]
     Auth --> Redis[Redis]
     Canteen --> Redis
     Auth --> MQ[RabbitMQ]
     MQ --> Mail[Mail]
     MQ --> User
-    Payment --> MQ
     MQ --> Canteen
-    Payment --> PG[PostgreSQL]
     Auth --> Mongo[MongoDB Atlas: nrapp]
     User --> Mongo
     Chat --> Mongo
@@ -115,13 +114,21 @@ flowchart TD
 
 Trong phương án này app ghi log JSON ra stdout; không gửi trace/metric OTLP. Prometheus scrape chính nó và Node Exporter; Grafana chỉ xem số liệu host CPU/RAM/disk. Không có lịch sử metrics từng container, dashboard nghiệp vụ hoặc trace phân tán. Sơ đồ lược bớt API User nội bộ; bảng service là danh sách phụ thuộc bổ sung.
 
+### 1.5. Vì sao tắt Payment không kéo sập toàn bộ backend
+
+- Trong `compose.yaml`, Gateway **không có `depends_on: payment`**; Gateway vẫn boot và `/health` vẫn trả liveness khi Payment vắng mặt.
+- Auth, User, Mail, Chat, Todo và Workschedule không gọi Payment trong luồng khởi động.
+- Canteen cần MongoDB/Redis/RabbitMQ/User, nhưng không cần tiến trình Payment để khởi động. Consumer thanh toán chỉ chờ event; không có event thì các nghiệp vụ khác vẫn chạy.
+- Chỉ nhánh VietQR bị kẹt: code Canteen yêu cầu đơn điện tử phải `PAID` trước khi xác nhận. Vì vậy đợt này bắt buộc dùng `CASH`.
+- Nginx chặn `/api/payment` bằng 503 trước Gateway để lỗi nhanh và rõ. Đây là cô lập lỗi theo route, không phải cam kết mọi service luôn khỏe; từng service vẫn phải được kiểm tra ở bước 10 và 12.
+
 ## 2. Chọn VPS và dự trù chi phí
 
 ### 2.1. Gói nào phù hợp?
 
 | Mục tiêu | Cấu hình dự kiến | Điều kiện |
 |---|---|---|
-| **Phương án chính tiết kiệm** | **2 vCPU, 4 GB, 50–60 GB SSD, swap 2 GB** | Đủ 9 app + 3 hạ tầng + 3 giám sát; Atlas ngoài VPS; build ngoài VPS; tải thấp, phải đo |
+| **Phương án chính tiết kiệm** | **2 vCPU, 4 GB, 50–60 GB SSD, swap 2 GB** | 8 app + Redis/RabbitMQ + 3 giám sát; Atlas ngoài VPS; build ngoài VPS; tải thấp, phải đo |
 | Khi ngân sách RAM đo thực tế không đủ | Giữ CPU hoặc nâng theo gói, RAM 6–8 GB | Chỉ nâng sau khi đã tắt stack thừa, đo RSS/heap/queue; không tự cắt service nghiệp vụ |
 | Có người dùng thật | Quyết định sau khi đo | Đo RAM, p95, queue, dung lượng, backup và mức gián đoạn chấp nhận được |
 
@@ -137,7 +144,7 @@ Giá web đối chiếu ngày 11/09/2026, cần xem lại ở trang đặt hàng
 | Hetzner Cloud | Có lựa chọn Singapore/Europe/USA; kiểm tra cấu hình, region, phí IPv4 và giá tại checkout. Giá mới đã có thay đổi trong 2026, không dựa vào bài viết giá cũ. [Thông tin server](https://docs.hetzner.com/cloud/servers/overview/), [thay đổi giá](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/) |
 | VPS Việt Nam | So sánh gói đáp ứng cấu hình ở trên, KVM, IPv4 riêng, console cứu hộ, khả năng mở SMTP outbound, snapshot và giá gia hạn. Tài liệu không có báo giá đã xác minh cho một hãng cụ thể. |
 
-Khi thanh toán, ghi đủ: VPS + IPv4 nếu tính riêng + thuế + backup/snapshot + domain + Atlas nếu trả phí + phí SMTP/Cloudinary/Casso nếu dùng + lưu backup ngoài VPS + băng thông vượt mức. Không cộng giá khuyến mãi tháng đầu thành chi phí vận hành dài hạn.
+Khi thanh toán tiền thuê hạ tầng, ghi đủ: VPS + IPv4 nếu tính riêng + thuế + backup/snapshot + domain + Atlas nếu trả phí + phí SMTP/Cloudinary + lưu backup ngoài VPS + băng thông vượt mức. Casso chưa tính trong giai đoạn này.
 
 ### 2.3. Checklist tại trang mua
 
@@ -158,22 +165,22 @@ Khi thanh toán, ghi đủ: VPS + IPv4 nếu tính riêng + thuế + backup/snap
 
 | Nhóm/service | `mem_limit` dự kiến (MiB) |
 |---|---:|
-| Gateway / Auth / Chat / Payment / Workschedule | 224 mỗi app = 1120 |
+| Gateway / Auth / Chat / Workschedule | 224 mỗi app = 896 |
 | User / Todo | 192 mỗi app = 384 |
 | Mail | 160 |
 | Canteen | 256 |
-| **Tổng 9 app** | **1920** |
-| Redis / RabbitMQ / PostgreSQL | 160 / 384 / 320 = **864** |
+| **Tổng 8 app** | **1696** |
+| Redis / RabbitMQ | 160 / 384 = **544** |
 | Prometheus / Grafana / Node Exporter | 256 / 192 / 48 = **496** |
-| **Tổng trần 15 container** | **3280 MiB** |
+| **Tổng trần 13 container** | **2736 MiB** |
 
-VPS quảng cáo 4 GB có thể cung cấp gần 3815 MiB hoặc 4096 MiB; xem `free -m`. Phần còn lại khoảng **535–816 MiB** dành cho OS, Docker, Nginx và quản trị, chưa tính build/import/backup làm tăng tải. Tránh đặt toàn bộ giới hạn vượt RAM rồi kỳ vọng swap cứu mọi trường hợp. Không chạy host Node/PM2 thêm một bản app.
+VPS quảng cáo 4 GB có thể cung cấp gần 3815 MiB hoặc 4096 MiB; xem `free -m`. Phần còn lại theo tổng trần khoảng **1079–1360 MiB** dành cho OS, Docker, Nginx và quản trị, chưa tính build/import/backup làm tăng tải. Tránh đặt toàn bộ giới hạn vượt RAM rồi kỳ vọng swap cứu mọi trường hợp. Không chạy host Node/PM2 thêm một bản app.
 
-Giới hạn heap Node thấp hơn limit container vì RSS còn có native memory, buffers, code và tiến trình healthcheck. Runtime chạy Node trực tiếp để tránh thêm npm process; Redis đặt `maxmemory` dưới limit và `noeviction` để không âm thầm đẩy phiên/OTP ra khỏi bộ nhớ. RabbitMQ có watermark thấp hơn hard limit; PostgreSQL giảm buffers/connections. Cấu hình cụ thể ở bước 9.
+Giới hạn heap Node thấp hơn limit container vì RSS còn có native memory, buffers, code và tiến trình healthcheck. Runtime chạy Node trực tiếp để tránh thêm npm process; Redis đặt `maxmemory` dưới limit và `noeviction` để không âm thầm đẩy phiên/OTP ra khỏi bộ nhớ. RabbitMQ có watermark thấp hơn hard limit. Cấu hình cụ thể ở bước 9.
 
-Disk 50–60 GB: dành chỗ OS/Docker, 9 runtime image, DB và **ít nhất 10 GB trống** cho cập nhật/backup tạm. Prometheus giữ 2 ngày và retention size 512 MB cho blocks; WAL/head/compaction vẫn dùng thêm disk, không phải quota toàn volume. Log Docker giới hạn 5 MB × 2 file mỗi container. Sau deploy ổn chỉ giữ một release trước; chuyển backup ra máy cá nhân. [Prometheus: lưu trữ và retention](https://prometheus.io/docs/prometheus/latest/storage/).
+Disk 50–60 GB: dành chỗ OS/Docker, 8 runtime image, volume Redis/RabbitMQ/monitoring và **ít nhất 10 GB trống** cho cập nhật/backup tạm. Prometheus giữ 2 ngày và retention size 512 MB cho blocks; WAL/head/compaction vẫn dùng thêm disk, không phải quota toàn volume. Log Docker giới hạn 5 MB × 2 file mỗi container. Sau deploy ổn chỉ giữ một release trước; chuyển backup ra máy cá nhân. [Prometheus: lưu trữ và retention](https://prometheus.io/docs/prometheus/latest/storage/).
 
-Để giảm tiền thuê: dùng Atlas Free cho lab nhỏ theo giới hạn ở bước 7; tận dụng SMTP/Cloudinary test trong quota bạn có; chưa thuê thêm VPS giám sát, managed PostgreSQL hay registry trả phí. Chi phí các dịch vụ ngoài phải xem quota thực tế, không giả định toàn bộ miễn phí vĩnh viễn.
+Để giảm tiền thuê: dùng Atlas Free cho lab nhỏ theo giới hạn ở bước 7; tận dụng SMTP/Cloudinary test trong quota bạn có; chưa thuê thêm VPS giám sát, PostgreSQL hay registry trả phí. Chi phí các dịch vụ ngoài phải xem quota thực tế, không giả định toàn bộ miễn phí vĩnh viễn.
 
 ## 3. Chuẩn bị trước khi mua
 
@@ -188,7 +195,7 @@ Disk 50–60 GB: dành chỗ OS/Docker, 9 runtime image, DB và **ít nhất 10 
 | Thư mục backend VPS | `/opt/nrapp/backend` |
 | Compose project | `nrapp-backend` cho app, `nrapp-monitoring-minimal` cho 3 giám sát; network chung giữ `nrapp-observability` để tương thích Compose backend |
 | Database MongoDB | `nrapp` trên **cluster dành riêng cho lab** |
-| Database Payment | `nrapp_payment` |
+| Database Payment | Chưa tạo trong giai đoạn này |
 
 Đoạn lệnh ghi **máy cá nhân** chạy trong terminal máy bạn; đoạn ghi **VPS** chạy sau khi SSH. Shell giả định là Bash; trên Windows dùng WSL hoặc Git Bash cho lệnh Linux. Không dán toàn bộ tài liệu vào terminal một lần.
 
@@ -196,9 +203,9 @@ Disk 50–60 GB: dành chỗ OS/Docker, 9 runtime image, DB và **ít nhất 10 
 
 1. Có tài khoản nhà cung cấp VPS và quản lý DNS của domain; bật MFA cho tài khoản quản trị.
 2. Chuẩn bị Atlas lab, SMTP dùng để nhận OTP, Cloudinary test. Có thể hoàn thành cấu hình IP sau khi VPS được tạo.
-3. Nếu chưa có domain, vẫn học build và API qua SSH tunnel; cần domain trước bước HTTPS và callback Casso theo lộ trình này.
+3. Nếu chưa có domain, vẫn học build và API qua SSH tunnel; cần domain trước bước HTTPS. Callback Casso không thuộc đợt triển khai này.
 4. Đọc các file `.env.example`; tạo secret mới cho VPS, không chép nguyên `.env` máy dev.
-5. Đảm bảo source có `package-lock.json` của **9 service và `logger/packages/observability`**. Dockerfile dùng `npm ci`; thiếu lockfile là build thất bại.
+5. Đảm bảo source có `package-lock.json` của **8 service được deploy và `logger/packages/observability`**. Dockerfile dùng `npm ci`; thiếu lockfile là build thất bại. Lockfile Payment giữ trong source nhưng chưa dùng.
 6. Đưa cả thư mục `backend`, bao gồm `logger/packages/observability`, `logger/observability`, `scripts`, `docker`. Không chỉ upload `src` hoặc `gateway`.
 
 Bản workspace dùng để lập tài liệu không có `.git` tại root/backend. Vì vậy phần upload có cả cách dùng Git và cách `rsync`; không giả định bạn đã có remote repository.
@@ -207,13 +214,14 @@ Bản workspace dùng để lập tài liệu không có `.git` tại root/backe
 
 | Phát hiện từ source | Việc phải làm | Bước |
 |---|---|---|
-| App dùng `restart: "no"` | Override `unless-stopped` cho đủ 9 app | 9 |
+| App dùng `restart: "no"` | Override `unless-stopped` cho đủ 8 app được deploy | 9 |
 | Gateway mặc định `0.0.0.0:3000` | Đổi bind thành `127.0.0.1`; Nginx nhận public traffic | 8, 11 |
-| Mail/User có alias `RABBITMQ_*` trong env mẫu; các service đọc alias với ưu tiên khác nhau | Override thống nhất biến RabbitMQ cho Auth/User/Mail/Canteen/Payment | 9 |
+| Mail/User có alias `RABBITMQ_*` trong env mẫu; các service đọc alias với ưu tiên khác nhau | Override thống nhất biến RabbitMQ cho Auth/User/Mail/Canteen | 9 |
+| Payment/Casso tạm ngừng | Tách Payment và PostgreSQL sang profile `payment-later`; Nginx trả 503 riêng cho `/api/payment` | 9, 11, 12 |
 | Rate limiter lấy `request.ip`, Gateway chưa cấu hình trust proxy | Thêm cấu hình một proxy tin cậy, Nginx ghi đè forwarded headers | 9, 11 |
 | MongoDB một số service cố định `nrapp` | Tách cluster lab, thống nhất database | 7 |
 | Auth/Gateway health chỉ kiểm tra liveness | Thử đăng nhập, OTP, profile; không lấy health làm kiểm tra nghiệp vụ | 12 |
-| Compose logger kéo nhiều dependency; app vẫn bật OTel | Compose giám sát độc lập, datasource/targets riêng, tắt SDK trên 9 app | 9, 13 |
+| Compose logger kéo nhiều dependency; app vẫn bật OTel | Compose giám sát độc lập, datasource/targets riêng, tắt SDK trên 8 app | 9, 13 |
 | Google login chưa thấy kiểm tra `aud` theo client ID trong hàm hiện tại | Bài lab dùng email/OTP; chặn route Google ở Nginx mẫu đến khi hoàn thiện xác minh token | 11 |
 
 ## 4. Tạo VPS, SSH và firewall
@@ -354,9 +362,9 @@ systemctl is-enabled docker
 
 Quyền group Docker cho phép điều khiển host gần tương đương root; chỉ cấp cho tài khoản quản trị. Dùng plugin `docker compose` hiện hành. [Hướng dẫn Docker Ubuntu](https://docs.docker.com/engine/install/ubuntu/).
 
-### 5.2. Node 22 trên host để chạy script quản trị
+### 5.2. Node 22 trên host (tùy chọn)
 
-App vẫn chạy trong container Node 22. **Node host là tùy chọn**, chỉ cài nếu muốn chạy payment smoke script ở VPS; helper `dc`/`mc` và Docker deploy không cần Node host. Build/test chính ở máy cá nhân. Không dùng script điều phối full logger trên VPS tiết kiệm.
+App vẫn chạy trong container Node 22. **Đợt triển khai không Payment này không cần Node trên host**; helper `dc`/`mc` và Docker deploy chỉ cần Bash + Docker. Có thể bỏ qua toàn bộ mục 5.2. Chỉ cài Node nếu sau này cần chạy script quản trị của repository; build/test chính vẫn thực hiện ở máy cá nhân.
 
 **VPS, deploy, không sudo**:
 
@@ -452,12 +460,12 @@ test -f compose.yaml
 test -f docker/node-service.Dockerfile
 test -f logger/packages/observability/package-lock.json
 test -f logger/observability/prometheus/prometheus.yaml
-for service in gateway auth user mail chat todo workschedule canteen payment; do
+for service in gateway auth user mail chat todo workschedule canteen; do
   test -f "$service/package-lock.json" || printf 'THIEU lockfile: %s\n' "$service"
 done
 ```
 
-Không chạy `npm install` ở backend root với kỳ vọng cài đủ 9 app: root hiện chỉ có script điều phối, không khai báo npm workspaces cho toàn bộ service.
+Không chạy `npm install` ở backend root với kỳ vọng cài đủ app: root hiện chỉ có script điều phối, không khai báo npm workspaces cho toàn bộ service.
 
 ## 7. Chuẩn bị MongoDB và dịch vụ ngoài
 
@@ -505,16 +513,11 @@ nc -vz smtp.gmail.com 465
 3. Giữ API secret ở backend; frontend chỉ gọi API upload hiện có.
 4. Upload một ảnh nhỏ khi test Chat và kiểm tra cả record message lẫn tài nguyên Cloudinary.
 
-### 7.4. Payment / Casso
+### 7.4. Payment / Casso — hoãn hoàn toàn
 
-1. Trước hết dựng database và endpoint với secret lab; chưa cấu hình ngân hàng thật vẫn kiểm tra được health và xác thực request.
-2. Để dùng VietQR, điền đúng bank ID, số tài khoản, chủ tài khoản và template theo cấu hình `payment/.env.example`.
-3. Khi đã có HTTPS, cấu hình Casso V2 callback tới **`https://api.example.com/api/payment/webhooks/casso`**.
-4. `CASSO_WEBHOOK_SECRET` phải là secret đúng phía Casso, độc lập `PAYMENT_INTERNAL_SECRET` dùng giữa Gateway và Payment.
-5. Source có alias `/api/payment/webhook/casso` và `/api/payment/callback`; chọn đường dẫn plural `webhooks/casso` nhất quán cho tài liệu/test.
-6. Không đặt Cloudflare Access/login challenge trước callback máy gọi máy. Giữ xác thực chữ ký ở Payment.
+Không tạo PostgreSQL, không tạo `payment/.env`, không build image Payment, không chạy migration và không khai báo callback Casso trong đợt này. Nếu Casso vẫn còn callback cũ trỏ về domain dự kiến, hãy **disable callback đó trên Casso** để tránh retry vô ích.
 
-Chi tiết hợp đồng dự án: [Payment Service Guide](PAYMENT_SERVICE_GUIDE.md), [hướng dẫn Casso/Cloudflare hiện có](HUONG_DAN_SETUP_BACKEND_THANH_TOAN_CASSO_CLOUDFLARE.md). Khi UI/tính năng phía Casso thay đổi, kiểm tra lại tài liệu nhà cung cấp tại lúc cấu hình.
+Source vẫn giữ nguyên để dùng sau này. Khi Casso hoạt động lại, thực hiện một đợt triển khai Payment riêng theo [Payment Service Guide](PAYMENT_SERVICE_GUIDE.md) và [hướng dẫn Casso/Cloudflare](HUONG_DAN_SETUP_BACKEND_THANH_TOAN_CASSO_CLOUDFLARE.md); không chỉ bật profile trên hệ thống thật mà bỏ qua migration, secret và kiểm thử webhook.
 
 ## 8. Tạo env và đồng bộ secret
 
@@ -527,13 +530,28 @@ cd /opt/nrapp/backend
 umask 077
 test -f .env || cp .env.example .env
 test -f logger/.env || cp logger/.env.example logger/.env
-for service in gateway auth user mail chat todo workschedule canteen payment; do
+for service in gateway auth user mail chat todo workschedule canteen; do
   test -f "$service/.env" || cp "$service/.env.example" "$service/.env"
 done
-chmod 600 .env logger/.env gateway/.env auth/.env user/.env mail/.env chat/.env todo/.env workschedule/.env canteen/.env payment/.env
+chmod 600 .env logger/.env gateway/.env auth/.env user/.env mail/.env chat/.env todo/.env workschedule/.env canteen/.env
 ```
 
 Dùng `nano .env` hoặc editor qua SSH. Sinh mỗi secret bằng `openssl rand -hex 32`; mỗi lần chạy cho một giá trị mới. Lưu trong password manager, chỉ dán cùng giá trị ở các đầu cần chia sẻ.
+
+Có thể chạy khối sau để sinh lần lượt các giá trị cần điền (output là secret, không chụp màn hình/chia sẻ terminal):
+
+```bash
+for name in \
+  RABBITMQ_PASSWORD PAYMENT_POSTGRES_PASSWORD_DORMANT \
+  JWT_SECRET AUTH_INTERNAL_SECRET USER_INTERNAL_SECRET CHAT_INTERNAL_SECRET \
+  TODO_INTERNAL_SECRET WORKSCHEDULE_INTERNAL_SECRET CANTEEN_INTERNAL_SECRET \
+  PAYMENT_INTERNAL_SECRET_DISABLED GRAFANA_ADMIN_PASSWORD; do
+  printf '%s=' "$name"
+  openssl rand -hex 32
+done
+```
+
+`JWT_SECRET` dùng cùng giá trị ở các file được nêu trong bảng 8.3; từng loại internal secret dùng đúng cặp đầu-cuối của nó. Không dán nguyên output vào một file vì tên `*_DORMANT`/`*_DISABLED` trong khối sinh chỉ là nhãn dễ nhận biết, không phải tên biến runtime.
 
 ### 8.2. Sửa `backend/.env`
 
@@ -549,23 +567,27 @@ GATEWAY_HOST_PORT=3000
 
 RABBITMQ_USER=nrapp_lab
 RABBITMQ_PASSWORD=REPLACE_WITH_RANDOM_HEX
-PAYMENT_POSTGRES_USER=nrapp_payment
-PAYMENT_POSTGRES_PASSWORD=REPLACE_WITH_ANOTHER_RANDOM_HEX
-PAYMENT_POSTGRES_DB=nrapp_payment
+
+# Compose gốc vẫn nội suy ba biến này dù profile payment-later đang tắt.
+# Chúng KHÔNG tạo database; vẫn dùng giá trị ngẫu nhiên để tránh cấu hình yếu
+# nếu ai đó vô tình bật nhầm profile trong tương lai.
+PAYMENT_POSTGRES_USER=nrapp_payment_disabled
+PAYMENT_POSTGRES_PASSWORD=REPLACE_WITH_RANDOM_HEX_DORMANT
+PAYMENT_POSTGRES_DB=nrapp_payment_disabled
 
 USER_INTERNAL_SECRET=REPLACE_WITH_RANDOM_HEX
 CHAT_INTERNAL_SECRET=REPLACE_WITH_RANDOM_HEX
 TODO_INTERNAL_SECRET=REPLACE_WITH_RANDOM_HEX
 WORKSCHEDULE_INTERNAL_SECRET=REPLACE_WITH_RANDOM_HEX
 CANTEEN_INTERNAL_SECRET=REPLACE_WITH_RANDOM_HEX
-PAYMENT_INTERNAL_SECRET=REPLACE_WITH_RANDOM_HEX
+PAYMENT_INTERNAL_SECRET=REPLACE_WITH_RANDOM_HEX_FOR_DISABLED_ROUTE
 
 OTEL_TRACES_SAMPLER_ARG=0
 OTEL_METRIC_EXPORT_INTERVAL=15000
 OTEL_METRIC_EXPORT_TIMEOUT=10000
 ```
 
-**Mỗi `REPLACE_...` phải thay bằng giá trị thật khác nhau**, ngoại trừ những nơi cố ý chia sẻ cùng secret. Sampler 0 ở đây chưa đủ tắt metrics/exporter; bắt buộc inject `OTEL_SDK_DISABLED=true` bằng override bước 9. Các biến root của full observability có thể còn trong mẫu nhưng không khởi chạy stack nếu chỉ dùng `dc`/`mc`.
+**Mỗi `REPLACE_...` ở khối trên phải thay bằng giá trị ngẫu nhiên thật**, ngoại trừ những nơi cố ý chia sẻ cùng secret. Ba biến `PAYMENT_POSTGRES_*` vẫn phải có giá trị vì Compose nội suy file gốc trước khi lọc profile; chúng không làm PostgreSQL chạy. `PAYMENT_INTERNAL_SECRET` hiện chỉ giúp Gateway khởi động/Compose nội suy; nó chưa kết nối Casso và không có Payment nhận secret. Sampler 0 chưa đủ tắt metrics/exporter; bước 9 inject `OTEL_SDK_DISABLED=true`.
 
 `AUTH_INTERNAL_SECRET` và `JWT_SECRET` chưa được Compose gốc lấy từ root env để inject. Chỉ thêm chúng vào root env sẽ **không đủ**; điền ở env service như bảng dưới.
 
@@ -580,10 +602,8 @@ OTEL_METRIC_EXPORT_TIMEOUT=10000
 | `TODO_INTERNAL_SECRET` | Gateway, Todo | Compose inject từ root |
 | `WORKSCHEDULE_INTERNAL_SECRET` | Gateway, Workschedule | Compose inject từ root |
 | `CANTEEN_INTERNAL_SECRET` | Gateway, Canteen | Compose inject từ root |
-| `PAYMENT_INTERNAL_SECRET` | Gateway, Payment | Compose inject từ root |
-| `CASSO_WEBHOOK_SECRET` | Casso và Payment | `payment/.env` |
-| RabbitMQ user/password | Broker, Auth, User, Mail, Canteen, Payment | Root env + override chung cho 5 app ở bước 9 |
-| PostgreSQL password | PostgreSQL và Payment | Root env; không chạy PostgreSQL exporter trên VPS này |
+| `PAYMENT_INTERNAL_SECRET` | Chỉ Gateway trong đợt này | Root env; sinh giá trị ngẫu nhiên để cấu hình Gateway hợp lệ, chưa chia sẻ cho Payment |
+| RabbitMQ user/password | Broker, Auth, User, Mail, Canteen | Root env + override chung cho 4 app ở bước 9 |
 
 Đồng bộ bản sao internal secret trong service env với root để sau này chạy script trực tiếp không dùng nhầm giá trị cũ. Khi chạy Compose, `environment:` sẽ ghi đè `env_file:`. `backend/.env` chủ yếu phục vụ **nội suy Compose**, không tự phát tán tất cả biến cho mọi container.
 
@@ -599,7 +619,6 @@ OTEL_METRIC_EXPORT_TIMEOUT=10000
 | `canteen/.env` | Atlas URI **có `/nrapp`**, internal secret |
 | `gateway/.env` | JWT, Auth internal secret; giữ rate limit khởi đầu 120 request/60 giây rồi đo lại |
 | `mail/.env` | SMTP thật cho lab; queue giữ tên `send-otp`, retry, DLQ như mẫu |
-| `payment/.env` | Casso secret, cấu hình tài khoản nhận QR, internal secret |
 | `logger/.env` | Mật khẩu Grafana mới, network khớp root; retention minimal khai báo trực tiếp trong Compose mới |
 
 Trong các service env, đổi `NODE_ENV=production` nếu có và `LOG_LEVEL=info`. Compose gốc inject cấu hình production và OTLP container URL; override VPS thêm `OTEL_SDK_DISABLED=true` nên URL Collector đó không được export tới. Các dòng localhost upstream/Redis/Postgres được Compose override; riêng **MongoDB, SMTP, Cloudinary, JWT/Auth secret vẫn phải điền thật**.
@@ -622,19 +641,23 @@ python3 - <<'PY'
 from pathlib import Path
 files = [Path('.env'), Path('logger/.env')]
 files += [Path(s) / '.env' for s in
-          ['gateway', 'auth', 'user', 'mail', 'chat', 'todo', 'workschedule', 'canteen', 'payment']]
+          ['gateway', 'auth', 'user', 'mail', 'chat', 'todo', 'workschedule', 'canteen']]
 markers = ('REPLACE_', 'CHANGE_ME', 'replace_with', 'replace-with', 'your_cloudinary', 'your-email')
 for path in files:
     for number, line in enumerate(path.read_text().splitlines(), 1):
         if line.lstrip().startswith('#') or '=' not in line:
             continue
         key, value = line.split('=', 1)
+        if path == Path('.env') and key.startswith('PGADMIN_'):
+            continue  # pgAdmin đang tắt
+        if path == Path('gateway/.env') and key == 'PAYMENT_INTERNAL_SECRET':
+            continue  # root .env inject giá trị tạm cho Gateway
         if any(marker in value for marker in markers):
             print(f'{path}:{number}: còn placeholder tại {key.strip()}')
 PY
 ```
 
-Đây là bộ lọc hỗ trợ, không kiểm tra credential hợp lệ. Các biến tùy chọn có thể để trống theo file mẫu, ví dụ `CASSO_WEBHOOK_PREVIOUS_SECRET`; các mục chưa dùng như pgAdmin vẫn cần hoàn thiện trước khi bật profile đó.
+Đây là bộ lọc hỗ trợ, không kiểm tra credential hợp lệ. Các biến thuộc Payment/pgAdmin được bỏ qua có chủ ý và chỉ được hoàn thiện trong đợt triển khai Payment sau này.
 
 ## 9. Cấu hình riêng cho VPS
 
@@ -721,11 +744,11 @@ services:
     environment:
       <<: [*vps-env, *vps-rabbitmq]
       NODE_OPTIONS: --max-old-space-size=160
+
+  # Không deploy Payment trong giai đoạn Casso hết hạn. !override thay profile
+  # "app" của Compose gốc, nên --profile app sẽ không chọn service này.
   payment:
-    <<: *vps-app
-    image: nrapp/payment:${NRAPP_IMAGE_TAG:-vps-lab-001}
-    environment:
-      <<: [*vps-env, *vps-rabbitmq]
+    profiles: !override [payment-later]
 
   redis:
     mem_limit: 160m
@@ -742,23 +765,12 @@ services:
         bind:
           create_host_path: false
   payment-postgres:
-    mem_limit: 320m
-    logging: *vps-logging
-    command:
-      - postgres
-      - -c
-      - shared_buffers=64MB
-      - -c
-      - work_mem=2MB
-      - -c
-      - maintenance_work_mem=32MB
-      - -c
-      - max_connections=30
-      - -c
-      - max_parallel_workers=0
+    profiles: [payment-later]
 ```
 
-Mail cần override này vì [environment.ts](../backend/mail/src/config/environment.ts) ưu tiên uppercase của `.env.example` trước legacy mixed-case do Compose gốc inject. User cũng có `RABBITMQ_USER=guest`/`RABBITMQ_PASSWORD=guest` trong env mẫu và [RabbitMQ service](../backend/user/src/modules/rabbitmq/rabbitmq.service.ts) ưu tiên các alias đó. Áp override chung cho cả 5 app dùng broker để host/user/password thống nhất. Các biến `Rabbitmq_*` từ Compose gốc vẫn được giữ khi merge.
+Mail cần override này vì [environment.ts](../backend/mail/src/config/environment.ts) ưu tiên uppercase của `.env.example` trước legacy mixed-case do Compose gốc inject. User cũng có `RABBITMQ_USER=guest`/`RABBITMQ_PASSWORD=guest` trong env mẫu và [RabbitMQ service](../backend/user/src/modules/rabbitmq/rabbitmq.service.ts) ưu tiên các alias đó. Áp override chung cho cả 4 app đang dùng broker để host/user/password thống nhất. Các biến `Rabbitmq_*` từ Compose gốc vẫn được giữ khi merge.
+
+`!override` yêu cầu Docker Compose hiện đại (Docker Compose 2.24.4 trở lên; cài từ repository Docker ở bước 5 sẽ đáp ứng). Kiểm tra bằng `docker compose version`. Không chạy `--profile payment-later`: profile này chỉ là chốt an toàn để Payment/PostgreSQL không bị kéo lên bởi `--profile app`. Khi triển khai Payment sau này phải tạo một override/release riêng đầy đủ, không dùng nhầm cấu hình giới hạn đã bị bỏ ở đây.
 
 `RABBITMQ_AMQP_HOST_PORT=5672` trong **environment container** ở đây là để tương thích tên biến cũ trong source: kết nối nội bộ luôn tới `rabbitmq:5672`. Nếu đổi port publish ở root `.env`, không mang host port đó vào kết nối container-to-container.
 
@@ -773,7 +785,7 @@ RabbitMQ watermark là ngưỡng **chặn publisher khi RAM tăng**, không ph�
 
 `NODE_OPTIONS` chỉ giới hạn old-space heap, không giới hạn toàn bộ RSS; `mem_limit` áp dụng cả Node và tiến trình healthcheck. Chạy Node trực tiếp vẫn preload observability như Gateway và giữ shutdown signal qua `init:true` trong base Compose. Nếu thay đổi start script về sau, kiểm tra lại command override này. Tắt SDK dựa trên nhánh `OTEL_SDK_DISABLED` có sẵn trong [sdk.js](../backend/logger/packages/observability/sdk.js), không xóa thư viện hoặc import.
 
-Giữ Redis AOF/RDB và `noeviction`: khi đạt `maxmemory`, một số lệnh ghi sẽ bị từ chối; cần xử lý dung lượng, không dùng `allkeys-lru` tùy tiện cho OTP/refresh token. Khoảng trống trên 48 MB dùng cho overhead/fork/rewrite, không đảm bảo dữ liệu lớn luôn vừa. PostgreSQL `work_mem` tính theo từng thao tác/connection, không phải tổng DB; max_connections 30 dành cho một Payment replica và quản trị ít kết nối. Các limit này phải được nghiệm thu ở mục 13.4, không chỉ thấy container khởi động.
+Giữ Redis AOF/RDB và `noeviction`: khi đạt `maxmemory`, một số lệnh ghi sẽ bị từ chối; cần xử lý dung lượng, không dùng `allkeys-lru` tùy tiện cho OTP/refresh token. Khoảng trống trên 48 MB dùng cho overhead/fork/rewrite, không đảm bảo dữ liệu lớn luôn vừa. Các limit này phải được nghiệm thu ở mục 13.4, không chỉ thấy container khởi động.
 
 ### 9.2. Tạo lệnh `dc` để luôn dùng cả hai file
 
@@ -797,7 +809,7 @@ Thêm một lần dòng sau vào `~/.bashrc` để phiên SSH sau cũng có `dc`
 export PATH="/home/deploy/bin:$PATH"
 ```
 
-Từ đây mọi thao tác app dùng **`dc`**. Các lệnh `npm run docker:up`, `docker:start`, `infra:up` hiện tại không biết file `compose.vps.yaml`; không dùng chúng thay lệnh của hướng dẫn. Script `npm run dev` còn tự dừng app container, không chạy trên VPS này.
+Từ đây mọi thao tác app dùng **`dc`**. Các lệnh `npm run docker:up`, `docker:start`, `infra:up` trong `package.json` có thể kéo `payment-postgres` hoặc full logger; **không dùng chúng trên VPS này**. Script `npm run dev` còn tự dừng app container, không chạy trên VPS.
 
 `unless-stopped` giúp container khởi động lại khi tiến trình thoát hoặc Docker khởi động lại, trừ container đã chủ động stop. **Docker không tự restart chỉ vì healthcheck chuyển `unhealthy`**; cần điều tra và xử lý riêng.
 
@@ -997,9 +1009,26 @@ dc --profile app config --quiet
 mc config --quiet
 dc --profile app config --services
 mc config --services
+test "$(dc --profile app config --services | wc -l)" -eq 10
+test "$(mc config --services | wc -l)" -eq 3
 ```
 
-Hai cấu hình phải exit 0. `dc` có 12 service: 9 app + 3 hạ tầng; `mc` phải chỉ có **prometheus, grafana, node-exporter**. Không paste `docker compose config` nguyên bản lên nơi công khai vì output có thể chứa env/secret đã nội suy. Kiểm tra `OTEL_SDK_DISABLED=true` và `mem_limit` đã merge trên đủ 9 app; đặt biến chỉ ở root `.env` chưa đủ inject vào app.
+Hai cấu hình phải exit 0. Kết quả `dc --profile app config --services` phải chỉ có đúng 10 tên sau (thứ tự có thể khác):
+
+```text
+redis
+rabbitmq
+gateway
+auth
+user
+mail
+chat
+todo
+workschedule
+canteen
+```
+
+Nếu thấy `payment` hoặc `payment-postgres`, dừng lại và kiểm tra file override/phiên bản Compose; không chạy `up`. `mc` phải chỉ có **prometheus, grafana, node-exporter**. Không paste `docker compose config` nguyên bản lên nơi công khai vì output có thể chứa secret đã nội suy. Kiểm tra `OTEL_SDK_DISABLED=true` và `mem_limit` đã merge trên đủ 8 app.
 
 Giữ nguyên project name sau khi có dữ liệu: đổi tên project có thể tạo volume khác, nhìn giống mất database dù volume cũ vẫn còn.
 
@@ -1017,7 +1046,7 @@ Dùng `stop` để giữ volume/network; không `down -v`, không xóa volume c�
 
 ### 10.1. Build image ở máy cá nhân — lộ trình chính tiết kiệm
 
-Build ở máy có đủ RAM thay vì vừa chạy 15 container vừa biên dịch trên VPS 4 GB. Dùng Docker Desktop/Engine ở máy cá nhân; ở Windows dùng WSL Bash. Source, Dockerfile và thư viện logger vẫn giữ nguyên; thêm sửa proxy ở bước 9.4 nếu chọn topology Nginx đó.
+Build ở máy có đủ RAM thay vì vừa chạy 13 container vừa biên dịch trên VPS 4 GB. Dùng Docker Desktop/Engine ở máy cá nhân; ở Windows dùng WSL Bash. Source, Dockerfile và thư viện logger vẫn giữ nguyên; **danh sách build cố ý không có `payment`**.
 
 **Máy cá nhân**, tại thư mục chứa `backend/`, build tuần tự đúng kiến trúc VPS:
 
@@ -1026,7 +1055,7 @@ cd backend
 (
   set -euo pipefail
   NRAPP_BUILD_TAG=vps-lab-001
-  for service in auth user mail chat todo workschedule canteen payment gateway; do
+  for service in auth user mail chat todo workschedule canteen gateway; do
     docker buildx build --platform linux/amd64 --load \
       --file docker/node-service.Dockerfile \
       --build-arg SERVICE_DIR="$service" \
@@ -1044,7 +1073,7 @@ Mỗi service phải build thành công; lỗi ở đâu xử lý ở đó. Trê
   set -euo pipefail
   NRAPP_BUILD_TAG=vps-lab-001
   NRAPP_TAGS=()
-  for service in gateway auth user mail chat todo workschedule canteen payment; do
+  for service in gateway auth user mail chat todo workschedule canteen; do
     NRAPP_TAGS+=("nrapp/$service:$NRAPP_BUILD_TAG")
   done
   docker image save "${NRAPP_TAGS[@]}" | gzip > /tmp/nrapp-images-vps-lab-001.tar.gz
@@ -1068,12 +1097,12 @@ sha256sum -c nrapp-images-vps-lab-001.sha256
 docker image ls --filter 'reference=nrapp/*:vps-lab-001'
 ```
 
-Phải đủ 9 tag, root `backend/.env` có `NRAPP_IMAGE_TAG=vps-lab-001`. Chỉ sau checksum/import thành công và đủ tag mới xóa **hai file archive/checksum truyền tạm này** để trả dung lượng VPS; giữ bản gốc ở máy cá nhân:
+Phải đủ **8 tag** và không cần tag `nrapp/payment`, root `backend/.env` có `NRAPP_IMAGE_TAG=vps-lab-001`. Chỉ sau checksum/import thành công và đủ tag mới xóa **hai file archive/checksum truyền tạm này** để trả dung lượng VPS; giữ bản gốc ở máy cá nhân:
 
 ```bash
 rm /opt/nrapp/nrapp-images-vps-lab-001.tar.gz /opt/nrapp/nrapp-images-vps-lab-001.sha256
 cd /opt/nrapp/backend
-dc pull redis rabbitmq payment-postgres
+dc pull redis rabbitmq
 mc pull
 ```
 
@@ -1086,13 +1115,13 @@ Cả backend và minimal monitoring tham gia network external cùng tên. Tạo 
 ```bash
 cd /opt/nrapp/backend
 docker network inspect nrapp-observability >/dev/null 2>&1 || docker network create nrapp-observability
-dc up -d --wait --wait-timeout 300 redis rabbitmq payment-postgres
+dc up -d --wait --wait-timeout 300 redis rabbitmq
 mc up -d --wait --wait-timeout 300
 dc ps
 mc ps
 ```
 
-`mc ps` phải đúng 3 container. Minimal Prometheus chỉ có 2 scrape target, không có app probes nên không chờ dashboard readiness 9 app tự xuất hiện.
+`mc ps` phải đúng 3 container. Minimal Prometheus chỉ có 2 scrape target, không có app probes nên không chờ dashboard readiness 8 app tự xuất hiện.
 
 Kiểm tra hạ tầng:
 
@@ -1101,11 +1130,16 @@ dc exec -T redis redis-cli ping
 dc exec -T redis redis-cli CONFIG GET maxmemory maxmemory-policy
 dc exec -T rabbitmq rabbitmq-diagnostics -q ping
 dc exec -T rabbitmq rabbitmq-diagnostics alarms
-dc exec -T payment-postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-dc exec -T payment-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW shared_buffers; SHOW max_connections;"'
 ```
 
-Kỳ vọng Redis `PONG`, `noeviction` và maxmemory 50331648 byte, RabbitMQ ping thành công/không có alarm, PostgreSQL 64 MB shared_buffers/30 connections. Nếu RabbitMQ đã báo memory alarm ngay khi rảnh, 384 MiB có thể quá chật với runtime/queue hiện tại; đo memory breakdown và phân bổ lại trước khi khởi động app.
+Kỳ vọng Redis `PONG`, `noeviction` và maxmemory 50331648 byte; RabbitMQ ping thành công và không có alarm. Xác nhận Payment/PostgreSQL không chạy:
+
+```bash
+test -z "$(dc ps -q payment)"
+test -z "$(dc ps -q payment-postgres)"
+```
+
+Hai lệnh `test` phải exit 0. Nếu RabbitMQ đã báo memory alarm ngay khi rảnh, đo memory breakdown và phân bổ lại trước khi khởi động app.
 
 ### 10.3. Nếu bắt buộc build trực tiếp trên VPS
 
@@ -1113,11 +1147,11 @@ Kỳ vọng Redis `PONG`, `noeviction` và maxmemory 50331648 byte, RabbitMQ pin
 
 ```bash
 cd /opt/nrapp/backend
-dc --profile app stop gateway auth user mail chat todo workschedule canteen payment
+dc --profile app stop gateway auth user mail chat todo workschedule canteen
 mc stop
 (
   set -euo pipefail
-  for service in auth user mail chat todo workschedule canteen payment gateway; do
+  for service in auth user mail chat todo workschedule canteen gateway; do
     dc --profile app build "$service"
   done
 )
@@ -1144,7 +1178,7 @@ Mail không healthy: kiểm tra SMTP và biến uppercase trước khi thử l�
 ```bash
 (
   set -e
-  for service in chat todo workschedule canteen payment; do
+  for service in chat todo workschedule canteen; do
     dc --profile app up -d --no-build --pull never --wait --wait-timeout 300 "$service"
     docker stats --no-stream
     free -m
@@ -1157,7 +1191,7 @@ dc --profile app ps
 Kiểm tra readiness các app có route tương ứng:
 
 ```bash
-for port in 5000 5001 5002 5003 5004 5005 5006; do
+for port in 5000 5001 5002 5003 5004 5005; do
   printf '\nPort %s: ' "$port"
   curl --fail --silent --show-error --max-time 15 "http://127.0.0.1:$port/health/ready" || break
 done
@@ -1166,15 +1200,23 @@ curl --fail --silent --show-error http://127.0.0.1:3000/health
 
 Nếu fail, xem log service tương ứng; không tiếp tục bước public trước khi lỗi nền tảng được giải quyết.
 
-### 10.6. Xác nhận migration Payment
-
-Compose đang đặt `PAYMENT_DB_RUN_MIGRATIONS=true`; source dùng `synchronize:false` và tự chạy hai migration đã khai báo.
+### 10.6. Xác nhận Payment/PostgreSQL thực sự đang tắt
 
 ```bash
-dc exec -T payment-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT id, name FROM payment_migrations ORDER BY id;"'
+cd /opt/nrapp/backend
+dc ps --all
+test "$(dc ps -q | wc -l)" -eq 10
+test "$(mc ps -q | wc -l)" -eq 3
+if docker ps --format '{{.Names}}' | rg -q 'payment|postgres'; then
+  printf 'LOI: Payment/PostgreSQL dang chay\n'
+  false
+else
+  printf 'OK: Payment/PostgreSQL dang tat\n'
+fi
+docker volume ls --format '{{.Name}}' | rg 'payment_postgres' || true
 ```
 
-Kỳ vọng thấy hai migration `InitialPaymentSchema1724000000000`, `AddOutboxObservability1724000001000` đã áp dụng. SQL tránh chạy thêm một Node/TypeORM CLI trong container Payment đang bị giới hạn RAM. Không gọi script migration có build trong runtime image đã bỏ dev dependencies; mọi migration mới phải được kiểm thử trước trên máy build/lab.
+Không thấy container Payment/PostgreSQL. Nếu volume `payment_postgres_data` cũ đã tồn tại từ lần chạy trước, lệnh cuối có thể in tên volume; **không xóa volume** nếu chưa xác nhận dữ liệu không cần nữa. Việc volume tồn tại không có nghĩa database đang chạy.
 
 ### 10.7. Kiểm tra MongoDB và index
 
@@ -1186,7 +1228,7 @@ dc exec -T user node -e 'const m=require("mongoose"); m.connect(process.env.MONG
 
 Kết nối thành công chưa kiểm tra transaction; thực hiện xuất kho/duyệt lịch ở bước 12. Kiểm tra index bằng Compass/mongosh trên đúng `nrapp`; Mongoose schema không tự loại bỏ index cũ. Đối chiếu [Canteen database indexes](../backend/canteen/docs/database-indexes.md); không chạy `dropIndexes()` hoặc `syncIndexes()` hàng loạt.
 
-**Hoàn thành bước 10 khi:** 12 container backend ở trạng thái mong đợi, 9 app có HTTP kiểm tra tương ứng, migration Payment đúng và MongoDB truy cập được.
+**Hoàn thành bước 10 khi:** đúng 10 container backend đang chạy (8 app + Redis + RabbitMQ), 8 app có HTTP kiểm tra tương ứng, Payment/PostgreSQL không chạy và MongoDB truy cập được. Cộng 3 container monitoring là tổng 13.
 
 ## 11. DNS, Nginx và HTTPS
 
@@ -1239,6 +1281,17 @@ server {
     }
     location = /api/auth/login-google/ {
         return 404;
+    }
+
+    # Payment/Casso tạm tắt. Trả lỗi rõ ràng ngay tại cửa vào, không để request
+    # chờ Gateway gọi tới container Payment không tồn tại.
+    location = /api/payment {
+        default_type application/json;
+        return 503 '{"statusCode":503,"code":"PAYMENT_TEMPORARILY_DISABLED","message":"Tinh nang thanh toan dang tam dung"}';
+    }
+    location ^~ /api/payment/ {
+        default_type application/json;
+        return 503 '{"statusCode":503,"code":"PAYMENT_TEMPORARILY_DISABLED","message":"Tinh nang thanh toan dang tam dung"}';
     }
 
     location / {
@@ -1324,6 +1377,15 @@ nc -vz -w 3 203.0.113.10 3001
 ```
 
 HTTPS phải được; các port nội bộ trên phải refused/timeout. Nếu port nội bộ kết nối được, kiểm tra bind IP, effective Compose, cloud firewall trước khi tiếp tục. Khi có IPv6, kiểm tra cả địa chỉ IPv6 public.
+
+Port 5006 và 5433 cũng phải refused/timeout vì không có container lắng nghe. Sau HTTPS, xác nhận chỉ Payment trả 503 còn Gateway vẫn khỏe:
+
+```bash
+curl --fail --silent --show-error https://api.example.com/health
+curl -i https://api.example.com/api/payment/history
+```
+
+Lệnh đầu phải 200. Lệnh thứ hai phải 503 với code `PAYMENT_TEMPORARILY_DISABLED`; không dùng `--fail` cho lệnh thứ hai vì 503 là kết quả chủ động mong đợi.
 
 ### 11.5. CORS và Google login trước khi có người dùng thật
 
@@ -1418,49 +1480,26 @@ Mong đợi gói mở Engine.IO thường bắt đầu bằng `0{...}`. Đây ch
 | Workschedule | Tạo yêu cầu/lịch theo vai trò, duyệt, đọc lại, thử chấm công | Giao dịch duyệt lịch không báo lỗi standalone transaction |
 | Canteen danh mục | Admin tạo nguyên liệu, danh mục, món, bàn | User xem được catalog đúng dữ liệu |
 | Canteen kho | Nhập hai lô, xuất một lượng qua API xuất kho | FEFO/số lượng nhất quán; transaction thành công |
-| Canteen đơn/bếp | Tạo đơn, nhận xử lý ở bếp, hoàn thành theo trạng thái hợp lệ | Đơn, tồn kho/bàn và quyền từng vai trò đúng |
+| Canteen đơn/bếp | Tạo đơn với **`paymentMethod=CASH`**, nhận xử lý ở bếp, hoàn thành theo trạng thái hợp lệ | Đơn, tồn kho/bàn và quyền từng vai trò đúng mà không cần Payment |
 | Phân quyền | User gọi thao tác admin/chef/manager không được cấp | Bị từ chối; không chỉ ẩn nút trên UI |
 
 Các bài kiểm tra ghi dữ liệu phải dùng cluster/database lab. Không coi `npm test` hoặc healthcheck là thay thế các bước này.
 
-### 12.6. Payment — chia ba mức kiểm tra
+### 12.6. Kiểm tra cô lập lỗi khi Payment tắt
 
-**Mức 1: hệ thống và xác thực, chưa cần chuyển tiền.** Health Payment xanh, migration đã áp dụng, request webhook không có chữ ký bị từ chối:
+Chạy từ **máy cá nhân** sau khi HTTPS hoàn tất:
 
 ```bash
-curl -i -X POST https://api.example.com/api/payment/webhooks/casso \
+curl --fail --silent --show-error https://api.example.com/health
+curl -i -X POST https://api.example.com/api/payment/create-qr \
   -H 'Content-Type: application/json' \
-  --data '{}'
+  --data '{"orderId":"000000000000000000000000"}'
+curl --fail --silent --show-error https://api.example.com/health
 ```
 
-Kỳ vọng phản hồi 4xx xác thực, thường 401 theo handler chữ ký hiện tại. Không kỳ vọng 200 khi thiếu secret/signature; không được sửa code bỏ xác thực để làm test xanh.
+Kết quả đúng: hai lần `/health` đều 200; request Payment ở giữa trả 503 và code `PAYMENT_TEMPORARILY_DISABLED`. Sau đó kiểm tra lại ít nhất một API có đăng nhập của Todo và một đơn Canteen `CASH`. Điều này chứng minh lỗi Payment không làm Gateway hoặc các service khác dừng, dù không chứng minh mọi nghiệp vụ khác đều đúng.
 
-**Mức 2: luồng ứng dụng và webhook giả lập trên dữ liệu lab.**
-
-1. Tạo đơn Canteen thuộc user lab với `paymentMethod=VIETQR` theo DTO.
-2. Gọi `POST /api/payment/create-qr` với `orderId` qua Gateway và access token.
-3. Kiểm tra QR, số tiền và tài khoản. Gateway đọc `finalAmount` từ Canteen rồi ký request sang Payment; client không tự quyết định amount.
-4. Gọi API đọc giao dịch để thấy `PENDING`.
-5. Test script có sẵn `payment/scripts/payment-smoke.mjs` tạo payment và webhook giả, **có ghi dữ liệu**, gọi trực tiếp Payment port 5006. Chỉ chạy khi dữ liệu/secret đều là lab, và hiểu nó không chứng minh tuyến Casso thật hoặc Gateway → Canteen tạo QR đúng.
-
-**VPS**, sau khi đồng bộ `PAYMENT_INTERNAL_SECRET` trong `payment/.env` với root:
-
-```bash
-cd /opt/nrapp/backend/payment
-npm run test:smoke
-```
-
-Script chạy bằng Node 22 host, nạp env service/root theo package script. Giữ `PAYMENT_SMOKE_BASE_URL` mặc định `http://127.0.0.1:5006`; không đổi sang Gateway vì hai endpoint có hợp đồng xác thực khác. Script tạo order ID giả; sự kiện tới Canteen có thể không tìm thấy đơn tương ứng, phải xem log/queue. Dùng test qua đơn thật của lab để kiểm tra settlement end-to-end.
-
-**Mức 3: webhook từ nhà cung cấp thực tế.**
-
-1. Đặt callback Casso tới URL HTTPS ở bước 7, chọn đúng V2/chữ ký tương ứng code.
-2. Thực hiện chức năng test của nhà cung cấp nếu có và hợp đồng payload tương thích.
-3. Nếu chủ động thử giao dịch thực, dùng tài khoản của bạn và giá trị nhỏ phù hợp chính sách nhà cung cấp; đối chiếu tiền thực nhận, không dựa riêng trạng thái UI.
-4. Theo dõi callback → Payment PostgreSQL → outbox → RabbitMQ → Canteen cập nhật trạng thái đơn.
-5. Kiểm tra webhook gửi lại không tạo thanh toán trùng; sai tài khoản/số tiền không tự đánh dấu đơn đã trả tiền.
-
-Giữ `CASSO_SIGNATURE_MAX_AGE_MS` theo chủ ý hiện tại và hợp đồng retry. Source mẫu để `0` nhằm chấp nhận retry có chữ ký; idempotency ở PostgreSQL vẫn quan trọng. Không xoay secret Casso ngẫu nhiên sau mỗi deploy.
+Không chạy `payment/scripts/payment-smoke.mjs`, không tạo đơn `VIETQR`, không gửi webhook giả và không cấu hình callback Casso. Nếu frontend có nút VietQR, ẩn/disable nút ở release frontend tương ứng và hiển thị thông báo thanh toán tạm ngừng; backend vẫn giữ 503 làm hàng rào cuối.
 
 ### 12.7. Cập nhật cấu hình client
 
@@ -1536,7 +1575,7 @@ Dấu `\|` ở hàng disk chỉ để escape bảng Markdown; query dán vào Gr
 
 ```bash
 dc logs --tail=100 gateway auth user mail
-dc logs --since=15m payment canteen
+dc logs --since=15m canteen workschedule todo chat
 dc logs --since=15m gateway auth | rg --fixed-strings 'REPLACE_REQUEST_ID'
 mc logs --tail=100 prometheus grafana node-exporter
 docker stats --no-stream
@@ -1544,20 +1583,20 @@ docker stats --no-stream
 
 Giữ JSON structured log, error ID/request ID vẫn hỗ trợ tìm lỗi theo source hiện tại. Không hứa có trace liên dịch vụ hoặc tìm log lịch sử trên Grafana: SDK đã tắt, không có Collector/Jaeger/Loki/Alloy. Log driver local quay vòng nên log cũ sẽ bị loại; xuất đoạn cần điều tra trước khi rotate. Logger package vẫn được build/import vì app phụ thuộc nó.
 
-Minimal cũng không có dashboard p95/error rate của API, history queue/DB/container metrics hoặc probe liên tục 9 app. Thay bằng healthcheck Docker + kiểm tra nghiệp vụ thủ công, Nginx log và RabbitMQ UI trong giai đoạn đầu. Nếu cần lịch sử này sau khi có tải thật, bổ sung có mục tiêu và đo lại RAM.
+Minimal cũng không có dashboard p95/error rate của API, history queue/DB/container metrics hoặc probe liên tục 8 app. Thay bằng healthcheck Docker + kiểm tra nghiệp vụ thủ công, Nginx log và RabbitMQ UI trong giai đoạn đầu.
 
 Không triển khai kênh cảnh báo ngoài trong cấu hình đầu tiên để giữ bước học đơn giản. Có thể tạo Grafana alert theo metric host ở giai đoạn sau, nhưng phải test tải/quota và thông báo; **hiện tại không có cam kết nhận cảnh báo khi VPS chết**. Alert đặt trên cùng VPS cũng không bảo đảm báo được khi cả máy mất kết nối.
 
 ### 13.4. Đo RAM và quyết định giữ gói 4 GB
 
-Sau mỗi nhóm app ở bước 10.4–10.5, rồi sau khi đủ 15 container:
+Sau mỗi nhóm app ở bước 10.4–10.5, rồi sau khi đủ 13 container:
 
 ```bash
 free -m
 docker stats --no-stream
 vmstat 1 10
 sudo journalctl -k --since '1 hour ago' --no-pager
-for service in gateway auth user mail chat todo workschedule canteen payment; do
+for service in gateway auth user mail chat todo workschedule canteen; do
   NRAPP_CONTAINER_ID=$(dc ps -q "$service")
   test -n "$NRAPP_CONTAINER_ID" || continue
   docker inspect --format '{{.Name}} memory_limit={{.HostConfig.Memory}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' "$NRAPP_CONTAINER_ID"
@@ -1568,15 +1607,15 @@ done
 
 Bài nghiệm thu bắt buộc trước khi giữ gói thuê lâu dài:
 
-1. Khởi động đủ **12 backend + 3 monitoring**; nếu app không boot với limit mẫu, đo và điều chỉnh ngay.
+1. Khởi động đủ **10 backend + 3 monitoring**; nếu app không boot với limit mẫu, đo và điều chỉnh ngay.
 2. Để chạy rảnh 15 phút, ghi RAM/CPU/queue baseline.
 3. Dùng hai tài khoản thử luân phiên các luồng bước 12 trong 30–60 phút; không dùng request OTP lặp liên tục làm benchmark.
 4. Dành một chu kỳ 24 giờ tải lab bình thường để phát hiện restart/heap tăng/disk growth; xem `vmstat` cột `si/so` có liên tục tăng không.
 5. Mục tiêu khởi đầu: không có OOM/restart lặp, không RabbitMQ memory alarm kéo dài, `MemAvailable` còn khoảng **500 MiB trở lên** lúc tải lab ổn định, không swap-in/out liên tục, còn từ 10 GB disk. Đây là tiêu chí chọn để có khoảng trống vận hành, không phải số đo đã đạt.
 6. Nếu chưa đạt: xác nhận không còn full logger/pgAdmin/app host; giảm concurrency nhập liệu/upload, kiểm tra queue bị kẹt và connection pool; build/backup ở thời điểm ít tải. Nới đúng service thiếu bộ nhớ trong ngân sách tổng hoặc tối ưu source bằng một task riêng có số đo.
-7. Nếu RSS cần thiết của đủ 9 app + 3 hạ tầng + 3 monitoring và OS vẫn vượt khả năng máy, **4 GB không đủ cho workload đó**. Giữ đủ 9 service như yêu cầu; khi đó cần tối ưu thêm hoặc tăng RAM, không âm thầm bỏ service và không khẳng định swap đã giải quyết.
+7. Nếu RSS cần thiết của đủ 8 app + Redis/RabbitMQ + 3 monitoring và OS vẫn vượt khả năng máy, **4 GB không đủ cho workload đó**. Khi đó cần tối ưu thêm hoặc tăng RAM; không cắt tiếp service ngoài phạm vi đã chốt.
 
-Ngưỡng từng container dùng trên 80–85% limit thường xuyên là tín hiệu xem xét, không tự động tăng limit toàn bộ. Tổng hard limit 3280 MiB không bao gồm container `docker run` tạm khi backup hoặc tiến trình build; không chạy các bài đó chồng giờ tải.
+Ngưỡng từng container dùng trên 80–85% limit thường xuyên là tín hiệu xem xét, không tự động tăng limit toàn bộ. Tổng hard limit dự kiến 2736 MiB không bao gồm container `docker run` tạm khi backup hoặc tiến trình build; không chạy các bài đó chồng giờ tải.
 
 ## 14. Backup và diễn tập restore
 
@@ -1584,7 +1623,6 @@ Ngưỡng từng container dùng trên 80–85% limit thường xuyên là tín 
 
 | Dữ liệu | Bản sao cần có |
 |---|---|
-| PostgreSQL Payment | `pg_dump -Fc`, xác nhận `pg_restore` đọc/restore được |
 | MongoDB `nrapp` | Atlas backup ở tier hỗ trợ, hoặc `mongodump` cho lab và diễn tập `mongorestore` |
 | Env/secrets/cấu hình | Bản sao mã hóa ngoài VPS; gồm Compose minimal, Prometheus/Grafana provisioning và RabbitMQ VPS config |
 | Redis | Xác định chấp nhận mất phiên/OTP hay cần lưu RDB/AOF nhất quán |
@@ -1598,7 +1636,7 @@ Mục tiêu ban đầu cho lab: backup sau buổi thực hành và trước mỗ
 
 ### 14.2. Chuẩn bị MongoDB Database Tools
 
-Để không cài thêm công cụ DB lên host, bài lab dùng container công cụ `mongo:8.0`. Đây là container **chạy tạm để dump/restore**, không phải MongoDB server thứ 16 chạy thường trực. Chạy ngoài giờ tải, ưu tiên lúc các app đã dừng theo 14.3; nếu disk không đủ image tool, chạy công cụ từ máy cá nhân đã allowlist Atlas. Kiểm tra image chứa các tool trước khi dùng:
+Để không cài thêm công cụ DB lên host, bài lab dùng container công cụ `mongo:8.0`. Đây là container **chạy tạm để dump/restore**, không phải container thứ 14 chạy thường trực. Chạy ngoài giờ tải, ưu tiên lúc các app đã dừng theo 14.3; nếu disk không đủ image tool, chạy công cụ từ máy cá nhân đã allowlist Atlas. Kiểm tra image chứa các tool trước khi dùng:
 
 ```bash
 docker pull mongo:8.0
@@ -1626,21 +1664,21 @@ uri: "mongodb+srv://nrapp_lab:REPLACE_PASSWORD@REPLACE_CLUSTER.mongodb.net/nrapp
 
 Không đưa URI thật vào command line; bind file cấu hình cho công cụ. `mongodump` hỗ trợ file config cho thông tin nhạy cảm. [MongoDB Database Tools: mongodump](https://www.mongodb.com/docs/database-tools/mongodump/).
 
-### 14.3. Tạo cặp backup nhất quán cho bài lab
+### 14.3. Tạo backup MongoDB nhất quán cho bài lab
 
-Payment/PostgreSQL và đơn Canteen/MongoDB liên quan nhau. Dump hai DB ở hai thời điểm khi vẫn có người ghi có thể tạo chênh lệch nghiệp vụ. Với lab ít người, dùng cửa sổ bảo trì ngắn:
+Vì PostgreSQL Payment chưa được tạo, đợt này chỉ dump MongoDB `nrapp`. Với lab ít người, dùng cửa sổ bảo trì ngắn:
 
 1. Ngừng thao tác thử từ client, để worker xử lý xong và kiểm tra backlog RabbitMQ.
-2. Dừng Gateway để không nhận thêm request mới; đang bật Casso thật thì phối hợp retry/đối soát của nhà cung cấp.
-3. Dừng các app ghi DB/consumer/worker rồi dump cả hai database; không dừng Redis/RabbitMQ/PostgreSQL trong bài này.
-4. Nếu còn queue pending/unacked, ghi nhận rõ; tốt nhất đưa về trạng thái yên trước khi lấy cặp backup. Không purge queue để làm số liệu đẹp.
+2. Dừng Gateway để không nhận thêm request mới.
+3. Dừng các app ghi MongoDB/consumer/worker rồi dump database; không dừng Redis/RabbitMQ.
+4. Nếu còn queue pending/unacked, ghi nhận rõ; tốt nhất đưa về trạng thái yên trước khi dump. Không purge queue để làm số liệu đẹp.
 
 **VPS**, chạy từng khối và kiểm tra lỗi. Khối sau dừng các app, Nginx sẽ tạm trả 502:
 
 ```bash
 dc --profile app stop gateway
 dc exec -T rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers
-dc --profile app stop auth user mail chat todo workschedule canteen payment
+dc --profile app stop auth user mail chat todo workschedule canteen
 ```
 
 Tạo thư mục riêng cho lần backup trong **cùng phiên SSH**:
@@ -1650,21 +1688,18 @@ umask 077
 NRAPP_BACKUP_DIR="/opt/nrapp-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$NRAPP_BACKUP_DIR"
 printf 'Backup directory: %s\n' "$NRAPP_BACKUP_DIR"
-dc exec -T payment-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$NRAPP_BACKUP_DIR/payment.dump"
-test -s "$NRAPP_BACKUP_DIR/payment.dump"
 docker run --rm --user "$(id -u):$(id -g)" \
   --mount type=bind,src=/home/deploy/.config/nrapp/mongodump.yml,dst=/tmp/mongodump.yml,readonly \
   mongo:8.0 mongodump --config=/tmp/mongodump.yml --db=nrapp --archive --gzip --numParallelCollections=1 \
   > "$NRAPP_BACKUP_DIR/mongo-nrapp.archive.gz"
 test -s "$NRAPP_BACKUP_DIR/mongo-nrapp.archive.gz"
-dc exec -T payment-postgres pg_restore --list < "$NRAPP_BACKUP_DIR/payment.dump" > "$NRAPP_BACKUP_DIR/payment-contents.txt"
 ```
 
-**Mỗi lệnh dump phải exit 0. File khác 0 byte chưa đủ chứng minh dump thành công.** Nếu một lệnh fail, không đánh dấu cặp backup thành công; giữ các file lỗi để điều tra hoặc lấy lại cặp backup trong cửa sổ mới. Sau khi hoàn tất hoặc quyết định dừng bài thử, bật app trở lại:
+Lệnh dump phải exit 0; file khác 0 byte chưa đủ chứng minh dump thành công. Nếu fail, không đánh dấu backup thành công. Sau khi hoàn tất hoặc quyết định dừng bài thử, bật app trở lại:
 
 ```bash
 dc --profile app up -d --no-build --pull never --wait --wait-timeout 300 user mail
-dc --profile app up -d --no-build --pull never --wait --wait-timeout 300 auth chat todo workschedule canteen payment
+dc --profile app up -d --no-build --pull never --wait --wait-timeout 300 auth chat todo workschedule canteen
 dc --profile app up -d --no-build --pull never --wait --wait-timeout 300 gateway
 ```
 
@@ -1672,7 +1707,7 @@ Lưu checksum **sau khi xác nhận dump thành công**:
 
 ```bash
 cd "$NRAPP_BACKUP_DIR"
-sha256sum payment.dump mongo-nrapp.archive.gz > SHA256SUMS
+sha256sum mongo-nrapp.archive.gz > SHA256SUMS
 sha256sum -c SHA256SUMS
 cd /opt/nrapp/backend
 ```
@@ -1687,7 +1722,7 @@ Từ **VPS**:
 cd /opt/nrapp/backend
 tar -czf "$NRAPP_BACKUP_DIR/config-private.tar.gz" \
   .env logger/.env gateway/.env auth/.env user/.env mail/.env chat/.env \
-  todo/.env workschedule/.env canteen/.env payment/.env \
+  todo/.env workschedule/.env canteen/.env \
   compose.yaml compose.vps.yaml docker/rabbitmq.vps.conf \
   logger/compose.vps-minimal.yaml logger/vps-minimal
 sudo cp /etc/nginx/sites-available/nrapp-api "$NRAPP_BACKUP_DIR/nginx-nrapp-api.conf"
@@ -1709,22 +1744,7 @@ scp -i ~/.ssh/nrapp_vps -r \
 
 Sau khi copy, chạy `sha256sum -c SHA256SUMS` trong thư mục backup máy cá nhân. Xác nhận bản ngoài VPS đọc được trước khi xóa các bản quá hạn. Gợi ý giữ 7 bản ngày và 4 bản tuần tùy dung lượng; chưa tự chạy lệnh xóa volume/backup.
 
-### 14.5. Restore PostgreSQL vào DB mới, không ghi đè DB đang chạy
-
-**VPS**, làm lúc tải thấp/cửa sổ bảo trì để `pg_restore` không tranh RAM/connection với Payment, đặt biến tới một backup đã kiểm tra. Ví dụ:
-
-```bash
-NRAPP_BACKUP_DIR=/opt/nrapp-backups/BACKUP_TIMESTAMP
-dc exec -T payment-postgres sh -c 'createdb -U "$POSTGRES_USER" nrapp_payment_restore_lab'
-dc exec -T payment-postgres sh -c 'pg_restore --exit-on-error --no-owner --no-privileges -U "$POSTGRES_USER" -d nrapp_payment_restore_lab' < "$NRAPP_BACKUP_DIR/payment.dump"
-dc exec -T payment-postgres sh -c 'psql -U "$POSTGRES_USER" -d nrapp_payment_restore_lab -c "SELECT id, name FROM payment_migrations ORDER BY id;"'
-```
-
-Chỉ tạo tên DB này nếu chưa tồn tại; nếu đã có từ lần thử trước, chọn tên restore lab mới. Không dùng `--clean` vào DB live. So sánh bảng, số lượng payment, webhook receipt/outbox và một số ID giao dịch đã ghi ở bước 12.
-
-Để kiểm tra ứng dụng với DB restore, cần một môi trường thử riêng trỏ đúng DB restore, có RabbitMQ riêng hoặc vô hiệu worker được thiết kế rõ; không bật thêm Payment vào queue đang hoạt động chỉ để thử đọc dữ liệu.
-
-### 14.6. Restore MongoDB vào cluster lab khác
+### 14.5. Restore MongoDB vào cluster lab khác
 
 1. Tạo cluster khôi phục riêng, user/allowlist riêng, database vẫn `nrapp` để tương thích source hardcode.
 2. Tạo `/home/deploy/.config/nrapp/mongorestore.yml` tương tự file dump nhưng URI là **cluster restore**, không phải cluster đang chạy.
@@ -1740,14 +1760,14 @@ docker run --rm -i --user "$(id -u):$(id -g)" \
 ```
 
 5. Kiểm tra collections/indexes và ID tài khoản/đơn/todo/lịch đã ghi trước đó.
-6. Muốn nghiệm thu đủ end-to-end, dựng backend trên **VPS phục hồi riêng** theo hướng dẫn, dùng Mongo cluster restore + PostgreSQL restore + queue/Redis riêng + secret lab; không bật callback ngân hàng thật hoặc gửi OTP ngoài ý muốn.
+6. Muốn nghiệm thu đủ end-to-end, dựng 8 app trên **VPS phục hồi riêng** theo hướng dẫn, dùng Mongo cluster restore + RabbitMQ/Redis riêng + secret lab; không gửi OTP ngoài ý muốn.
 7. Đăng nhập lại, xem dữ liệu, thử một thao tác ghi mới; đo thời gian từ VPS trống đến hệ thống hoạt động.
 
 Restore thành công trên tool nhưng chưa đọc được bằng ứng dụng thì chưa hoàn thành bài phục hồi.
 
-### 14.7. Redis, RabbitMQ và lịch tự động
+### 14.6. Redis, RabbitMQ và lịch tự động
 
-Redis trong repo bật AOF và có volume. Nếu chấp nhận mất phiên/OTP khi phục hồi lab, ghi rõ chính sách buộc người dùng đăng nhập lại; không giả định PostgreSQL/Mongo dump sẽ khôi phục Redis. Nếu cần giữ, học snapshot nhất quán RDB/AOF, thử restore trên Redis riêng; không copy trực tiếp thư mục đang ghi rồi coi là backup đã kiểm chứng.
+Redis trong repo bật AOF và có volume. Nếu chấp nhận mất phiên/OTP khi phục hồi lab, ghi rõ chính sách buộc người dùng đăng nhập lại; không giả định Mongo dump sẽ khôi phục Redis. Nếu cần giữ, học snapshot nhất quán RDB/AOF, thử restore trên Redis riêng; không copy trực tiếp thư mục đang ghi rồi coi là backup đã kiểm chứng.
 
 RabbitMQ definitions chỉ chứa topology/tài khoản/chính sách, không chứa message. Giữ definitions như sau nếu cần:
 
@@ -1757,7 +1777,7 @@ dc cp rabbitmq:/tmp/nrapp-definitions.json "$NRAPP_BACKUP_DIR/rabbitmq-definitio
 chmod 600 "$NRAPP_BACKUP_DIR/rabbitmq-definitions.json"
 ```
 
-Trong phục hồi lab, dựng broker mới và để app khai báo queue; nếu messages chưa được xử lý trước sự cố thì cần đối soát/replay có chủ đích. Không nối lại queue chứa message cũ với database đã lùi thời gian mà chưa đánh giá tác động, nhất là thanh toán.
+Trong phục hồi lab, dựng broker mới và để app khai báo queue; nếu messages chưa được xử lý trước sự cố thì cần đối soát/replay có chủ đích. Không nối lại queue chứa message cũ với database đã lùi thời gian mà chưa đánh giá tác động.
 
 Sau khi dump/restore thủ công đã thành công, mới tự động hóa:
 
@@ -1778,7 +1798,7 @@ cd /opt/nrapp/backend
 NRAPP_RELEASE=$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p /opt/nrapp/releases
 chmod 700 /opt/nrapp/releases
-for service in gateway auth user mail chat todo workschedule canteen payment; do
+for service in gateway auth user mail chat todo workschedule canteen; do
   NRAPP_CONTAINER_ID=$(dc ps -q "$service")
   test -n "$NRAPP_CONTAINER_ID" || break
   NRAPP_IMAGE_ID=$(docker inspect --format '{{.Image}}' "$NRAPP_CONTAINER_ID")
@@ -1787,25 +1807,25 @@ done
 docker image ls --filter 'reference=nrapp-rollback/*'
 ```
 
-Xác nhận **đủ 9 image cùng tag thời gian** rồi mới tiếp tục. Tag rollback giữ image cũ ngay cả khi build mới dùng lại tag mặc định; nó chỉ tồn tại trên VPS này. Khi cần khôi phục sang VPS khác, lưu/push image vào nơi riêng được quản lý quyền.
+Xác nhận **đủ 8 image cùng tag thời gian** rồi mới tiếp tục. Tag rollback giữ image cũ ngay cả khi build mới dùng lại tag mặc định; nó chỉ tồn tại trên VPS này. Khi cần khôi phục sang VPS khác, lưu/push image vào nơi riêng được quản lý quyền.
 
 Tạo override rollback từ tag vừa lưu:
 
 ```bash
 printf 'services:\n' > "/opt/nrapp/releases/rollback-$NRAPP_RELEASE.yaml"
-for service in gateway auth user mail chat todo workschedule canteen payment; do
+for service in gateway auth user mail chat todo workschedule canteen; do
   printf '  %s:\n    image: nrapp-rollback/%s:%s\n' "$service" "$service" "$NRAPP_RELEASE" \
     >> "/opt/nrapp/releases/rollback-$NRAPP_RELEASE.yaml"
 done
 ```
 
-Lưu cùng release: commit ID/source archive, `compose.vps.yaml`, env mã hóa, schema/migration version và danh sách image hạ tầng đang chạy. Không chỉ lưu source vì base image/dependency registry có thể thay đổi.
+Lưu cùng release: commit ID/source archive, `compose.vps.yaml`, env mã hóa, phiên bản schema và danh sách image hạ tầng đang chạy. Không chỉ lưu source vì base image/dependency registry có thể thay đổi.
 
 ### 15.2. Cập nhật một phiên bản mà không build trên VPS
 
-1. Lưu backup và đủ 9 image rollback ở 15.1.
-2. Sửa/test source trên máy cá nhân. Xem thay đổi env, API/event contract và migration trước khi deploy.
-3. Lặp bước 10.1 với tag mới **`vps-lab-002`** thay `vps-lab-001` ở lệnh build, tên archive/checksum và tên tag. Build đủ 9 image cho tag mới; Docker cache giúp service không đổi ít tốn công hơn.
+1. Lưu backup và đủ 8 image rollback ở 15.1.
+2. Sửa/test source trên máy cá nhân. Xem thay đổi env và API/event contract trước khi deploy.
+3. Lặp bước 10.1 với tag mới **`vps-lab-002`** thay `vps-lab-001` ở lệnh build, tên archive/checksum và tên tag. Build đủ 8 image cho tag mới; Docker cache giúp service không đổi ít tốn công hơn.
 4. Chuyển source/config cần thiết lên VPS, giữ env, cấu hình VPS và thư mục `logger/vps-minimal`. Import image/checksum thành công, kiểm tra đủ tag rồi đổi `NRAPP_IMAGE_TAG=vps-lab-002` trong root `.env`.
 5. Kiểm tra Compose và cập nhật tuần tự, Gateway sau cùng:
 
@@ -1814,7 +1834,7 @@ cd /opt/nrapp/backend
 dc --profile app config --quiet
 (
   set -e
-  for service in user mail auth chat todo workschedule canteen payment gateway; do
+  for service in user mail auth chat todo workschedule canteen gateway; do
     dc --profile app up -d --no-deps --no-build --pull never --wait --wait-timeout 300 "$service"
   done
 )
@@ -1839,24 +1859,24 @@ docker compose --env-file .env \
   --profile app up -d --no-build --pull never --wait --wait-timeout 300
 ```
 
-Kiểm tra image ID/tag đúng và thử nghiệp vụ lại. **Rollback image không rollback database.** Nếu migration mới không tương thích, chọn forward-fix hoặc phục hồi có kế hoạch, không chạy `migration:revert` mù quáng. Phục hồi PostgreSQL payment mà không xét MongoDB đơn hàng/RabbitMQ có thể lệch đối soát.
+Kiểm tra image ID/tag đúng và thử nghiệp vụ lại. **Rollback image không rollback MongoDB.** Nếu schema/event contract mới không tương thích, chọn forward-fix hoặc phục hồi có kế hoạch; không sửa dữ liệu mù quáng.
 
 Sau rollback, ghi lại file rollback đang được dùng. Helper `dc` cơ bản không chứa file rollback; lần deploy tiếp phải chọn rõ cấu hình/image đích, tránh vô tình quay về image lỗi.
 
 ### 15.4. Thử tự phục hồi tiến trình và reboot VPS
 
-Chỉ thử trên dữ liệu lab, không trong lúc chuyển tiền hoặc import dữ liệu:
+Chỉ thử trên dữ liệu lab, không trong lúc import dữ liệu:
 
-1. Kiểm tra đủ 9 app có restart policy đúng:
+1. Kiểm tra đủ 8 app có restart policy đúng:
 
 ```bash
-for service in gateway auth user mail chat todo workschedule canteen payment; do
+for service in gateway auth user mail chat todo workschedule canteen; do
   NRAPP_CONTAINER_ID=$(dc ps -q "$service")
   docker inspect --format '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' "$NRAPP_CONTAINER_ID"
 done
 ```
 
-2. Tạo một todo/message có ID đã ghi; xác nhận payment/đơn thử hiện có.
+2. Tạo một todo/message và một đơn `CASH` có ID đã ghi.
 3. Bài dừng chủ động một service để xem ảnh hưởng và health/log; minimal chưa cấu hình cảnh báo ngoài:
 
 ```bash
@@ -1883,14 +1903,14 @@ mc ps
 curl --fail --silent --show-error https://api.example.com/health
 ```
 
-6. Thử login/OTP, xem dữ liệu cũ, socket reconnect và migration. Các app có thể retry dependency trong lúc reboot; Compose `depends_on` không đảm bảo thứ tự khởi động lại do Docker daemon theo mọi tình huống. Nếu không tự phục hồi, đọc log và bổ sung retry/lifecycle phù hợp trước khi coi đạt bài reboot.
+6. Thử login/OTP, xem dữ liệu cũ, socket reconnect và đơn `CASH`. Các app có thể retry dependency trong lúc reboot; Compose `depends_on` không đảm bảo thứ tự khởi động lại do Docker daemon theo mọi tình huống. Nếu không tự phục hồi, đọc log và bổ sung retry/lifecycle phù hợp trước khi coi đạt bài reboot.
 
 ### 15.5. Các lệnh không dùng tùy tiện
 
 - Không `docker compose down -v`: `-v` xóa named volume thuộc project.
 - Không `docker system prune --volumes`, không xóa `/var/lib/docker` để chữa lỗi app.
-- Không đổi major PostgreSQL bằng cách thay tag và reuse volume mà chưa có kế hoạch nâng cấp.
-- Không kỳ vọng đổi `POSTGRES_PASSWORD`/`RABBITMQ_DEFAULT_PASS` env sẽ tự đổi password trên volume đã khởi tạo; phải thay trong DB/broker rồi đồng bộ client.
+- Không chạy `--profile payment-later` trong đợt này; nó sẽ mở lại phạm vi chưa cấu hình/kiểm thử.
+- Không kỳ vọng đổi `RABBITMQ_DEFAULT_PASS` env sẽ tự đổi password trên volume đã khởi tạo; phải thay trong broker rồi đồng bộ client.
 - Không chạy `npm run dev` trên VPS này vì script có thể dừng app container để chạy watch.
 - Không dùng `--remove-orphans` với wrapper logger; script hiện chủ động chặn option này.
 
@@ -1900,7 +1920,7 @@ curl --fail --silent --show-error https://api.example.com/health
 |---|---|---|
 | `network nrapp-observability ... not found` | Network external đã tạo thủ công chưa? | Chạy bước 10.2; giữ tên network root/logger khớp nhau |
 | Compose báo thiếu secret | `.env`, thư mục làm việc, `dc config --quiet` | Điền biến root bắt buộc; không chỉ điền env app |
-| Mail/User kết nối sai broker hoặc dùng `guest` | Override uppercase RabbitMQ có được merge? | Dùng `dc` với file VPS; áp bộ biến chung cho 5 app như bước 9 |
+| Mail/User kết nối sai broker hoặc dùng `guest` | Override uppercase RabbitMQ có được merge? | Dùng `dc` với file VPS; áp bộ biến chung cho 4 app như bước 9 |
 | OTP API báo gửi nhưng không có email | Mail health/log, inbox spam, SMTP outbound, queue/DLQ | Sửa SMTP/consumer; không liên tục gọi login vượt cooldown |
 | `MongoServerSelectionError` | Atlas allowlist, DNS SRV, password/URI, cluster trạng thái | Allow đúng IP outbound; URI `/nrapp`; kiểm tra từ container |
 | `querySrv` timeout | DNS outbound, DNS trong container | Kiểm tra DNS nhà cung cấp; Chat còn gọi `dns.setServers(['8.8.8.8','8.8.4.4'])` trong bootstrap nên resolver này cũng phải truy cập được |
@@ -1911,9 +1931,8 @@ curl --fail --silent --show-error https://api.example.com/health
 | API được nhưng Chat realtime không được | `/socket.io`, headers Upgrade, JWT `auth.token` | Dùng đúng Nginx mẫu, đúng domain/path, token access phù hợp |
 | Tất cả user cùng 429 | `request.ip`, trust proxy, X-Forwarded-For | Hoàn thành bước 9.4; không chỉ tăng rate limit lên cực lớn |
 | Upload 413 | Nginx log và parser/route upload app | Xác định lớp giới hạn; tăng có chủ đích và test ảnh lớn |
-| Casso 401 | Secret V2, header `x-casso-signature`, payload | Kiểm tra đúng cấu hình hai đầu; không bỏ verify |
-| Payment paid nhưng đơn chưa đổi | Outbox, RabbitMQ, consumer Canteen và order ID | Đối chiếu cùng ID; kiểm tra retry/DLQ; smoke direct Payment có thể dùng order ID giả |
-| `password authentication failed` PostgreSQL | Password thực trong volume so với env client | Password env khởi tạo không tự đổi DB cũ; đổi đúng ở server DB rồi đồng bộ |
+| `/api/payment/*` trả 503 | Nginx có code `PAYMENT_TEMPORARILY_DISABLED` | **Đúng theo kế hoạch**; dùng đơn `CASH`, không bật Payment riêng lẻ để né lỗi |
+| Payment/PostgreSQL xuất hiện trong `dc ps` | Profile/override hoặc lệnh đã dùng | Dừng lại, kiểm tra `!override [payment-later]`; không xóa volume cũ |
 | Không có trace/log Grafana hoặc p95 app | Phạm vi minimal đã tắt OTLP/Loki | Đây là tính năng đã bỏ; đọc `dc logs`, đo host bằng hai scrape target; không bật full stack để chữa `No data` |
 | Không nhận cảnh báo ngoài | Minimal chưa cấu hình kênh thông báo | Kiểm tra thủ công theo 13; cảnh báo ngoài là bước thêm sau và phải test |
 | Build exit 137 / container restart | OOM, heap và RAM/swap | Build ngoài VPS; kiểm tra từng limit/RSS theo 13.4; không tăng mọi limit cùng lúc |
@@ -1928,7 +1947,7 @@ Nhóm lệnh chẩn đoán **VPS**:
 cd /opt/nrapp/backend
 dc --profile app ps
 dc logs --tail=100 gateway auth user mail
-dc logs --tail=100 payment canteen rabbitmq
+dc logs --tail=100 canteen workschedule todo chat rabbitmq
 mc logs --tail=100 prometheus grafana node-exporter
 sudo tail -n 100 /var/log/nginx/error.log
 sudo journalctl -u docker --since '30 minutes ago' --no-pager
@@ -1950,10 +1969,10 @@ Thời lượng là ước lượng cho người mới, chưa tính thời gian 
 | Buổi | Thời lượng dự kiến | Làm theo bước | Sản phẩm phải có |
 |---|---|---|---|
 | 1 — trước khi thuê | 1–2 giờ | 1–3 | Chốt gói/chi phí, hiểu sơ đồ, chuẩn bị key và tài khoản |
-| 2 — Linux/VPS | 2–3 giờ | 4–5 | VPS SSH bằng deploy, firewall, Docker và Node hoạt động |
+| 2 — Linux/VPS | 2–3 giờ | 4–5 | VPS SSH bằng deploy, firewall và Docker hoạt động; Node host là tùy chọn |
 | 3 — cấu hình | 2–4 giờ | 6–9 | Source đầy đủ, Atlas/SMTP, env và override hợp lệ |
-| 4 — chạy backend | 2–4 giờ | 10 | Image build trên máy cá nhân, import lên VPS; đủ 15 container, migration đúng |
-| 5 — public API | 2–3 giờ | 11–12 | HTTPS, OTP/profile, Chat/Todo/lịch/Canteen và payment lab |
+| 4 — chạy backend | 2–4 giờ | 10 | Build/import 8 image; đủ 13 container; Payment/PostgreSQL không chạy |
+| 5 — public API | 2–3 giờ | 11–12 | HTTPS, OTP/profile, Chat/Todo/lịch/Canteen `CASH`; Payment trả 503 riêng |
 | 6 — vận hành | 2–4 giờ + theo dõi 24 giờ | 13–14 | Đạt ngân sách RAM 4 GB, dashboard host, backup ngoài VPS và restore thử |
 | 7 — diễn tập | 2–3 giờ | 15–16 | Deploy một thay đổi, rollback, reboot và ghi báo cáo |
 
@@ -1965,13 +1984,12 @@ Nếu mắc lỗi, giữ lại thông tin lỗi và checkpoint đã đạt. Ví 
 
 - [ ] Có deploy SSH bằng key, sudo và console cứu hộ.
 - [ ] Chỉ cửa vào public dự kiến hoạt động: SSH theo rule, HTTP/HTTPS.
-- [ ] Từ Internet không kết nối được Gateway 3000, app 4000/5000–5006, DB/cache/broker/monitoring.
-- [ ] Đủ **9 app + 3 hạ tầng + 3 giám sát = 15 container**, không có full logger/pgAdmin chạy thừa.
+- [ ] Từ Internet không kết nối được Gateway 3000, app 4000/5000–5006, cache/broker/monitoring.
+- [ ] Đủ **8 app + 2 hạ tầng + 3 giám sát = 13 container**; không có Payment/PostgreSQL/full logger/pgAdmin chạy thừa.
 - [ ] Image build ngoài VPS; cấu hình test RAM 4 GB đạt tiêu chí mục 13.4.
-- [ ] `OTEL_SDK_DISABLED=true` trên đủ 9 app; log JSON vẫn đọc được.
+- [ ] `OTEL_SDK_DISABLED=true` trên đủ 8 app; log JSON vẫn đọc được.
 - [ ] App restart policy là `unless-stopped`; reboot đã thử thực tế.
 - [ ] MongoDB lab tách khỏi dữ liệu thật và hỗ trợ transaction.
-- [ ] Payment có migration, không bật `synchronize:true`.
 
 **Ứng dụng**
 
@@ -1980,9 +1998,9 @@ Nếu mắc lỗi, giữ lại thông tin lỗi và checkpoint đã đạt. Ví 
 - [ ] User thường không thực hiện được thao tác admin.
 - [ ] Hai thiết bị gửi/nhận Chat realtime; upload Cloudinary được.
 - [ ] Todo CRUD được; lịch duyệt và xuất kho transaction thành công.
-- [ ] Canteen tạo/xử lý đơn với dữ liệu mẫu đúng.
-- [ ] Payment tạo QR từ giá server, webhook sai bị từ chối, replay không nhân đôi.
-- [ ] Đã phân biệt payment smoke giả lập với webhook/giao dịch thật.
+- [ ] Canteen tạo/xử lý đơn `CASH` với dữ liệu mẫu đúng.
+- [ ] `/api/payment/*` trả 503 có code rõ ràng, nhưng `/health` và API các service khác vẫn hoạt động.
+- [ ] Frontend không cho người dùng chọn VietQR trong thời gian Payment tắt.
 - [ ] Client IP qua Nginx không bị gom sai vào một bucket chung cho mọi mạng.
 
 **Vận hành**
@@ -1990,7 +2008,7 @@ Nếu mắc lỗi, giữ lại thông tin lỗi và checkpoint đã đạt. Ví 
 - [ ] Minimal smoke ở 13.1 thành công: 3 monitoring container, 2 targets up; biết giới hạn liveness Auth/Gateway.
 - [ ] Dashboard CPU/RAM/disk có dữ liệu; log xem bằng `dc logs`.
 - [ ] Hiểu các chức năng đã bỏ: trace/OTLP, log tập trung, metrics app và cảnh báo ngoài chưa cấu hình.
-- [ ] Có backup PostgreSQL/Mongo/config, bản ngoài VPS, checksum.
+- [ ] Có backup MongoDB/config, bản ngoài VPS, checksum.
 - [ ] Đã restore vào môi trường riêng và kiểm tra dữ liệu bằng ứng dụng.
 - [ ] Có image/source release trước, đã thử rollback tương thích schema.
 - [ ] Ghi RAM/CPU/disk, RSS/limit, swap và độ dài queue; không OOM/restart lặp sau bài chạy thử.
@@ -2017,10 +2035,10 @@ Bước tiếp theo:
 ### 18.1. Tối ưu sau khi có số đo
 
 1. Đo RSS từng container, RAM host, swap, CPU và queue ở trạng thái idle/tải. p95/5xx/throughput dùng kết quả công cụ thử tải hoặc bổ sung instrumentation riêng; minimal dashboard hiện không có các metric API này.
-2. Chọn API đọc ít tác động để thử tải tăng dần từ thấp; không dùng login OTP, upload ảnh hàng loạt hoặc payment webhook làm bài tải đầu tiên.
+2. Chọn API đọc ít tác động để thử tải tăng dần từ thấp; không dùng login OTP hoặc upload ảnh hàng loạt làm bài tải đầu tiên.
 3. Dừng tăng tải khi OOM, 5xx hoặc p95 vượt mục tiêu bạn chọn; xác định app/DB/queue/network là nơi nghẽn.
 4. Đặt memory/CPU limit theo số đo, điều chỉnh connection pool và retention; build trên máy/CI khác nếu build làm gián đoạn VPS.
-5. Đừng suy từ 15 container ra số user hỗ trợ; cần dữ liệu workload và số đo thực.
+5. Đừng suy từ 13 container ra số user hỗ trợ; cần dữ liệu workload và số đo thực.
 
 ### 18.2. Trước khi dùng cho dữ liệu thật
 
@@ -2028,17 +2046,17 @@ Bước tiếp theo:
 |---|---|
 | Khả năng chịu lỗi | Một VPS là một điểm lỗi; quyết định mức gián đoạn chấp nhận và có môi trường phục hồi |
 | Backup | Backup online/PITR phù hợp, restore định kỳ và đối soát dữ liệu liên dịch vụ |
-| Database | Cân nhắc managed PostgreSQL/Atlas tier đáp ứng workload và backup; nâng version có kế hoạch |
+| Database | Chọn Atlas tier đáp ứng workload/backup; khi bật Payment mới lập kế hoạch PostgreSQL riêng |
 | Traces | Jaeger persistent storage/retention phù hợp nếu cần điều tra qua reboot |
 | Entry/API | CORS theo origin, xác minh Google token, test IP/rate limiting theo topology thực |
 | Secret | Quy trình rotate từng loại, giữ tương thích hai đầu; không đổi toàn bộ secret mỗi deploy |
 | Delivery | CI build/test, image registry riêng, pin digest/release, deployment có kiểm tra và rollback |
-| Tài chính | Đối soát transaction/webhook/outbox/đơn hàng, không chỉ dựa dashboard UI |
+| Tài chính | Hiện đang tắt; trước khi mở lại phải đối soát transaction/webhook/outbox/đơn hàng, không chỉ dựa dashboard UI |
 
 ### 18.3. Tách hoặc scale service có lý do
 
 - Giám sát chiếm nhiều RAM/disk: chuyển observability sang máy/dịch vụ riêng sau khi đo; giữ private network/firewall.
-- PostgreSQL I/O/backup trở thành điểm nghẽn: tách DB hoặc dùng managed DB; xem lại TLS vì source hiện `PAYMENT_DB_SSL=true` dùng `rejectUnauthorized:false`, cần cấu hình CA/xác minh certificate trước kết nối DB ngoài máy cho môi trường thật.
+- Khi bật lại Payment: lập ngân sách RAM/disk mới cho PostgreSQL, migration, backup/restore và đối soát Casso; xem lại TLS nếu dùng DB ngoài VPS.
 - Gateway cần nhiều replica: rate limiter hiện dùng `Map` trong RAM; cần bộ đếm chung hoặc rate limiting tại ingress.
 - Chat cần nhiều replica: `userSocketMap` hiện nằm trong RAM một process; cần Socket.IO adapter/chia sẻ presence và routing phù hợp, kiểm tra sticky session nếu dùng polling.
 - Tách máy không tự tạo high availability nếu vẫn chỉ có một DB hoặc một broker. Tăng độ phức tạp sau khi đã thành thạo deploy, backup, restore và đo tải trên một VPS.
