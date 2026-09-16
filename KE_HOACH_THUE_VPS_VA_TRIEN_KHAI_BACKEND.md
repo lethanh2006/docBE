@@ -1,14 +1,14 @@
 # Kế hoạch thuê VPS và thực hành triển khai backend NRApp
 
-Ngày lập: **11/09/2026**. Cập nhật phạm vi không deploy Payment: **15/09/2026**. Căn cứ: mã nguồn và cấu hình hiện có trong `backend/`, đã đọc [CLAUDE.md](../backend/CLAUDE.md).
+Ngày lập: **11/09/2026**. Cập nhật phạm vi không deploy Payment: **15/09/2026**. Cập nhật kết quả triển khai thực tế và CD: **16/09/2026**. Căn cứ: mã nguồn và cấu hình hiện có trong `backend/`, đã đọc [CLAUDE.md](../backend/CLAUDE.md).
 
-**Phương án hiện tại:** một VPS **Linux Ubuntu 24.04 LTS x86_64, 2 vCPU/4 GB RAM**, Docker Compose chỉ chạy **8 app + 2 hạ tầng + 3 giám sát = 13 container**. **Chưa build/chạy `payment`, `payment-postgres`, pgAdmin và chưa cấu hình Casso** vì tài khoản Casso đang hết hạn. MongoDB Atlas đặt ngoài VPS; Nginx trên host làm cửa vào HTTPS. Giữ source Payment trong repository để triển khai ở giai đoạn sau.
+**Phương án đã triển khai:** một VPS **Linux Ubuntu 22.04.5 LTS x86_64, 2 vCPU/4 GB RAM**, Docker Compose chạy **8 app + 2 hạ tầng + 3 giám sát = 13 container**. Ubuntu 24.04 LTS vẫn là lựa chọn mục tiêu khi tạo VPS mới, nhưng máy thực tế hiện tại dùng 22.04.5 LTS. **Không build/chạy `payment`, `payment-postgres`, pgAdmin và chưa cấu hình Casso** vì tài khoản Casso đang hết hạn. MongoDB Atlas đặt ngoài VPS; Nginx trên host làm cửa vào HTTPS. Giữ source Payment trong repository để triển khai ở giai đoạn sau.
 
 **Cấu hình mua mục tiêu: 2 vCPU, 4 GB RAM, SSD/NVMe khoảng 50–60 GB, thêm 2 GB swap.** Ưu tiên build 8 image ở máy cá nhân rồi chuyển lên VPS. Đây là cấu hình thử nghiệm chi phí thấp, **chưa có benchmark chứng minh 8 app chạy ổn với giới hạn bên dưới**. Đo từng bước và điều chỉnh ngân sách RAM nếu có OOM; không cam kết số user.
 
 > **Phạm vi lỗi được chấp nhận:** mọi URL `/api/payment` sẽ chủ động trả **HTTP 503 `PAYMENT_TEMPORARILY_DISABLED`** tại Nginx. Các luồng Auth/User/Mail/Chat/Todo/Workschedule/Canteen vẫn được triển khai và kiểm thử riêng. Khi tạo đơn Canteen trong giai đoạn này phải dùng `paymentMethod=CASH`; đơn `VIETQR` sẽ ở `PENDING` và không thể đi tiếp vì không có Payment phát sự kiện xác nhận.
 
-Tài liệu này là kế hoạch và các mẫu để bạn thực hiện sau khi thuê VPS. **Việc tạo tài liệu chưa sửa source, chưa tạo VPS, chưa triển khai và chưa kiểm thử trên VPS thật.** Những cấu hình mới như `compose.vps.yaml` dưới đây là file bạn sẽ tạo trong quá trình thực hành.
+Tài liệu này giữ vai trò kế hoạch, giải thích kiến trúc và mẫu lệnh. Kế hoạch đã được thực hiện trên VPS thật ngày 15–16/09/2026; hướng dẫn thao tác, kết quả nghiệm thu và CD được ghi tại [Hướng dẫn triển khai backend VPS thực tế](HUONG_DAN_TRIEN_KHAI_BACKEND_VPS_THUC_TE.md). Các mục chưa đánh dấu trong checklist cuối tài liệu vẫn là việc chưa được nghiệm thu đầy đủ, không được tự hiểu là đã hoàn thành.
 
 ## Mục lục
 
@@ -1982,32 +1982,32 @@ Nếu mắc lỗi, giữ lại thông tin lỗi và checkpoint đã đạt. Ví 
 
 **Truy cập và hạ tầng**
 
-- [ ] Có deploy SSH bằng key, sudo và console cứu hộ.
-- [ ] Chỉ cửa vào public dự kiến hoạt động: SSH theo rule, HTTP/HTTPS.
-- [ ] Từ Internet không kết nối được Gateway 3000, app 4000/5000–5006, cache/broker/monitoring.
-- [ ] Đủ **8 app + 2 hạ tầng + 3 giám sát = 13 container**; không có Payment/PostgreSQL/full logger/pgAdmin chạy thừa.
-- [ ] Image build ngoài VPS; cấu hình test RAM 4 GB đạt tiêu chí mục 13.4.
-- [ ] `OTEL_SDK_DISABLED=true` trên đủ 8 app; log JSON vẫn đọc được.
+- [x] Có deploy SSH bằng key và sudo; nhà cung cấp có kênh quản trị/console cứu hộ.
+- [x] Chỉ cửa vào public dự kiến hoạt động: SSH theo rule, HTTP/HTTPS.
+- [x] Từ Internet không kết nối được Gateway 3000, app 4000/5000–5006, cache/broker/monitoring.
+- [x] Đủ **8 app + 2 hạ tầng + 3 giám sát = 13 container**; không có Payment/PostgreSQL/full logger/pgAdmin chạy thừa.
+- [x] Image được build ngoài VPS bằng máy cá nhân/GitHub Actions cho `linux/amd64`.
+- [x] `OTEL_SDK_DISABLED=true` trên đủ 8 app; log JSON vẫn đọc được.
 - [ ] App restart policy là `unless-stopped`; reboot đã thử thực tế.
-- [ ] MongoDB lab tách khỏi dữ liệu thật và hỗ trợ transaction.
+- [x] MongoDB Atlas lab được allowlist riêng cho IP VPS và kết nối thành công.
 
 **Ứng dụng**
 
-- [ ] Domain HTTPS hợp lệ, HTTP redirect, renewal dry-run thành công.
+- [x] Domain HTTPS hợp lệ, HTTP redirect, renewal dry-run thành công.
 - [ ] Register → profile sync → login → OTP mail → verify → me → refresh hoạt động.
 - [ ] User thường không thực hiện được thao tác admin.
 - [ ] Hai thiết bị gửi/nhận Chat realtime; upload Cloudinary được.
 - [ ] Todo CRUD được; lịch duyệt và xuất kho transaction thành công.
 - [ ] Canteen tạo/xử lý đơn `CASH` với dữ liệu mẫu đúng.
-- [ ] `/api/payment/*` trả 503 có code rõ ràng, nhưng `/health` và API các service khác vẫn hoạt động.
+- [x] `/api/payment/*` trả 503 có code rõ ràng, nhưng `/health` và health của 8 service khác vẫn hoạt động.
 - [ ] Frontend không cho người dùng chọn VietQR trong thời gian Payment tắt.
 - [ ] Client IP qua Nginx không bị gom sai vào một bucket chung cho mọi mạng.
 
 **Vận hành**
 
-- [ ] Minimal smoke ở 13.1 thành công: 3 monitoring container, 2 targets up; biết giới hạn liveness Auth/Gateway.
-- [ ] Dashboard CPU/RAM/disk có dữ liệu; log xem bằng `dc logs`.
-- [ ] Hiểu các chức năng đã bỏ: trace/OTLP, log tập trung, metrics app và cảnh báo ngoài chưa cấu hình.
+- [x] Minimal smoke ở 13.1 thành công: 3 monitoring container, 2 targets up; biết giới hạn liveness Auth/Gateway.
+- [x] Prometheus nhận metric Node Exporter; Grafana đã provision datasource. Dashboard tùy chỉnh vẫn phải import/tạo theo nhu cầu.
+- [x] Đã xác nhận phạm vi minimal không có trace/OTLP, log tập trung, metrics app và cảnh báo ngoài.
 - [ ] Có backup MongoDB/config, bản ngoài VPS, checksum.
 - [ ] Đã restore vào môi trường riêng và kiểm tra dữ liệu bằng ứng dụng.
 - [ ] Có image/source release trước, đã thử rollback tương thích schema.
@@ -2050,7 +2050,7 @@ Bước tiếp theo:
 | Traces | Jaeger persistent storage/retention phù hợp nếu cần điều tra qua reboot |
 | Entry/API | CORS theo origin, xác minh Google token, test IP/rate limiting theo topology thực |
 | Secret | Quy trình rotate từng loại, giữ tương thích hai đầu; không đổi toàn bộ secret mỗi deploy |
-| Delivery | CI build/test, image registry riêng, pin digest/release, deployment có kiểm tra và rollback |
+| Delivery | CI/CD hiện build đúng commit đã qua CI, truyền image qua SSH key giới hạn theo service, kiểm tra health và tự rollback; cân nhắc registry/pin digest khi mở rộng nhiều VPS |
 | Tài chính | Hiện đang tắt; trước khi mở lại phải đối soát transaction/webhook/outbox/đơn hàng, không chỉ dựa dashboard UI |
 
 ### 18.3. Tách hoặc scale service có lý do
