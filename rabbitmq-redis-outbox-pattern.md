@@ -12,6 +12,7 @@
 9. [Tại sao không thể "insert xong rồi gửi" đơn giản](#9-tại-sao-không-thể-insert-xong-rồi-gửi-đơn-giản)
 10. [Các lỗi thường gặp & cách phòng tránh](#10-các-lỗi-thường-gặp--cách-phòng-tránh)
 11. [Checklist áp dụng Outbox Pattern](#11-checklist-áp-dụng-outbox-pattern)
+12. [Triển khai trong NRAPP Auth/User](#12-triển-khai-trong-nrapp-authuser)
 
 ---
 
@@ -333,3 +334,23 @@ await db.transaction(async (trx) => {
 ---
 
 *Tài liệu tổng hợp từ buổi thảo luận về RabbitMQ, Redis, Outbox Pattern và kiến trúc microservice Auth/User.*
+
+
+## 12. Triển khai trong NRAPP Auth/User
+
+Kiểm tra code ngày 16/09/2026: trước thay đổi, Auth ghi credential rồi gọi RabbitMQ riêng và chỉ log khi publish lỗi. User đã có consumer nhưng chưa bảo vệ đầy đủ khỏi redelivery/sai thứ tự, còn nack lỗi mà không requeue.
+
+Đã bổ sung transactional outbox theo MongoDB thực tế của dự án (các schema SQL phía trên chỉ minh họa):
+
+- Auth: credential + `auth_outbox_events` cùng transaction cho đăng ký, Google mới, đổi email/role, xóa cá nhân/admin. Relay nền claim bằng lease/token, chờ publisher confirm và retry vô hạn có backoff. TTL dọn record đã gửi sau 7 ngày; không xóa pending.
+- User: `user_profile_sync_states` + profile cùng transaction, dùng version chống trùng/sai thứ tự. Snapshot dựng được profile nếu UPDATE tới trước CREATE và giữ tên do User quản lý. DELETE lưu tombstone lâu dài để event cũ không tạo lại tài khoản.
+- Consumer chỉ ack sau DB commit; lỗi tạm thời vào quorum retry queue có TTL 5 giây và at least once dead lettering; message sai vào queue dead. Việc chuyển retry/dead cũng chờ broker confirm trước khi ack bản gốc.
+- ObjectId Auth được giữ nguyên ở User. Payload không chứa password hash, OTP/token. Redis tiếp tục giữ OTP/session; `send-otp` không được ghép vào transaction MongoDB.
+
+**Điều kiện:** MongoDB replica set/sharded cluster, cùng connection/database cho nghiệp vụ và outbox (hoặc sync state), quyền tạo collection/index và RabbitMQ hỗ trợ quorum retry queue. Không fallback dual write nếu Mongo standalone.
+
+**Thứ tự đưa lên môi trường chạy:** triển khai User mới trước, tạm dừng ghi Auth và xử lý hết message format cũ cả queue chính/retry, sau đó triển khai Auth mới. Đổi lại eventual consistency, Auth ghi thành công không đồng nghĩa profile đã đồng bộ xong. Event đã mất từ hệ thống cũ cần đối soát riêng, outbox mới không tự phục hồi lịch sử.
+
+Hướng dẫn chi tiết và lệnh kiểm tra nằm trong `backend/auth/OUTBOX.md` và `backend/user/PROFILE_SYNC.md` tại từng repository service. Các suite integration dùng `OUTBOX_TEST_MONGO_URL` và tự tạo/xóa database test riêng để kiểm tra rollback, version đồng thời, duplicate và tombstone.
+
+Kiểm chứng triển khai: lint, format và build đều đạt; 51 test Auth + 32 test User đạt (bao gồm MongoDB replica set thật). Smoke trên MongoDB 7.0/RabbitMQ 4.2.7 xác nhận gửi bù sau broker restart, relay đồng thời, retry consumer sau TTL, tombstone và giữ event không hợp lệ trong queue dead.
