@@ -1937,3 +1937,190 @@ Không restart liên tục trước khi đọc log và xác định dependency n
 - [Compose VPS](../backend/compose.vps.yaml)
 - [Monitoring Compose](../backend/logger/compose.vps-minimal.yaml)
 - [Cấu hình Nginx](../backend/docker/nginx/)
+
+## 26. Continuous Deployment từ GitHub Actions
+
+### 26.1. Kiến trúc CD
+
+Mỗi service là một Git repository độc lập. Tám repository đang chạy trên VPS
+có workflow `CD` riêng:
+
+| Service | GitHub repository | Nhánh mặc định |
+|---|---|---|
+| Auth | `lethanh2006/AUTH_SERVICE` | `main` |
+| Canteen | `lethanh2006/CANTEEN_SERVICE` | `main` |
+| Chat | `lethanh2006/CHAT_SERVICE` | `master` |
+| Gateway | `lethanh2006/API-GATEWAY` | `main` |
+| Mail | `lethanh2006/MAIL_SERVICE` | `main` |
+| Todo | `lethanh2006/TODO_SERVICE` | `main` |
+| User | `lethanh2006/USER_SERVICE` | `main` |
+| Workschedule | `lethanh2006/WORKSCHEDULE_SERVICE` | `main` |
+
+Payment không có CD vì chưa được triển khai.
+
+Luồng tự động:
+
+1. Push code vào nhánh mặc định.
+2. Workflow `CI` chạy lint, test và build.
+3. Chỉ khi CI thành công, workflow `CD` checkout đúng commit SHA đã qua CI.
+4. GitHub runner build đúng một image `linux/amd64`.
+5. Image được nén và truyền trực tiếp qua SSH; không cần Docker registry.
+6. VPS lưu image hiện tại thành tag `rollback`, nạp image mới và chỉ recreate
+   service vừa thay đổi.
+7. Compose chờ healthcheck. Nếu lỗi, receiver tự đưa image cũ trở lại.
+
+Các file của mỗi service:
+
+```text
+.github/
+├── workflows/cd.yml
+├── docker/node-service.Dockerfile
+├── docker/node-service.Dockerfile.dockerignore
+└── known_hosts
+```
+
+Receiver dùng chung được lưu tại:
+
+```text
+backend/logger/deploy/vps-ci-receiver
+```
+
+Và đã được cài trên VPS thành:
+
+```text
+/home/deploy/bin/nrapp-ci-receiver
+```
+
+### 26.2. Bảo vệ SSH cho CD
+
+Không dùng private key cá nhân `nrapp_vps`. Mỗi repository có một Ed25519 key
+riêng:
+
+```text
+~/.ssh/nrapp_github_cd_auth
+~/.ssh/nrapp_github_cd_canteen
+~/.ssh/nrapp_github_cd_chat
+~/.ssh/nrapp_github_cd_gateway
+~/.ssh/nrapp_github_cd_mail
+~/.ssh/nrapp_github_cd_todo
+~/.ssh/nrapp_github_cd_user
+~/.ssh/nrapp_github_cd_workschedule
+```
+
+Public key đã được cài vào `authorized_keys` bằng `restrict` và forced command.
+Ví dụ key của Auth chỉ gọi được:
+
+```text
+/home/deploy/bin/nrapp-ci-receiver auth
+```
+
+Nó không mở được shell, không forwarding và không deploy được service khác.
+Receiver cũng từ chối Payment.
+
+### 26.3. Thêm secret vào tám GitHub repository
+
+Máy hiện tại chưa đăng nhập GitHub CLI. Trên **máy cá nhân**, đăng nhập tài
+khoản sở hữu các repository:
+
+```bash
+gh auth login
+gh auth status
+```
+
+Sau đó đặt secret mà không in private key ra màn hình:
+
+```bash
+declare -A NRAPP_CD_REPOSITORIES=(
+  [auth]='lethanh2006/AUTH_SERVICE'
+  [canteen]='lethanh2006/CANTEEN_SERVICE'
+  [chat]='lethanh2006/CHAT_SERVICE'
+  [gateway]='lethanh2006/API-GATEWAY'
+  [mail]='lethanh2006/MAIL_SERVICE'
+  [todo]='lethanh2006/TODO_SERVICE'
+  [user]='lethanh2006/USER_SERVICE'
+  [workschedule]='lethanh2006/WORKSCHEDULE_SERVICE'
+)
+
+for service in \
+  auth canteen chat gateway mail todo user workschedule
+do
+  key="$HOME/.ssh/nrapp_github_cd_${service}"
+  repository="${NRAPP_CD_REPOSITORIES[$service]}"
+
+  test -s "$key"
+  gh secret set \
+    VPS_SSH_PRIVATE_KEY \
+    --repo "$repository" \
+    <"$key"
+done
+```
+
+Chỉ kiểm tra tên secret, GitHub không cho đọc lại giá trị:
+
+```bash
+for repository in "${NRAPP_CD_REPOSITORIES[@]}"; do
+  printf '\n%s:\n' "$repository"
+  gh secret list --repo "$repository" \
+    | rg '^VPS_SSH_PRIVATE_KEY\b'
+done
+```
+
+Nếu Logger chuyển thành private, vẫn phải cấu hình thêm `LOGGER_READ_TOKEN`
+như tài liệu CI của từng repository.
+
+### 26.4. Kích hoạt CD
+
+Workflow chỉ hoạt động sau khi commit chứa `cd.yml` được push lên GitHub. Push
+từng repository bằng đúng nhánh hiện tại; không dùng `--force`:
+
+```bash
+git -C /mnt/data/pj1/backend/auth push origin main
+git -C /mnt/data/pj1/backend/canteen push origin main
+git -C /mnt/data/pj1/backend/chat push origin master
+git -C /mnt/data/pj1/backend/gateway push origin main
+git -C /mnt/data/pj1/backend/mail push origin main
+git -C /mnt/data/pj1/backend/todo push origin main
+git -C /mnt/data/pj1/backend/user push origin main
+git -C /mnt/data/pj1/backend/workschedule push origin main
+```
+
+Một push vào nhánh mặc định sẽ tạo hai workflow liên tiếp trong tab
+**Actions**: `CI`, rồi đến `CD`. Pull Request, nhánh phụ, Dependabot và CI thất
+bại đều không deploy.
+
+### 26.5. Theo dõi và rollback
+
+Kiểm tra lịch sử deployment trên VPS:
+
+```bash
+tail -n 30 /opt/nrapp/cd/history.tsv
+```
+
+Xem image rollback đang giữ:
+
+```bash
+docker image ls \
+  --filter 'reference=nrapp/*:rollback' \
+  --format 'table {{.Repository}}\t{{.Tag}}\t{{.CreatedSince}}\t{{.Size}}'
+```
+
+Xem trạng thái và log sau deployment:
+
+```bash
+dc --profile app ps
+dc --profile app logs --tail 150 TEN_SERVICE
+```
+
+Nếu healthcheck deployment mới thất bại, CD tự rollback và job GitHub vẫn đỏ
+để báo cần sửa code. Không xóa tag `rollback` khi chưa kiểm tra release mới.
+
+### 26.6. Trạng thái thiết lập CD
+
+- [x] Có workflow CD cho tám service đang chạy.
+- [x] Build image `linux/amd64` trên GitHub runner.
+- [x] Receiver có deployment lock, healthcheck và rollback.
+- [x] Tám SSH key riêng đã tạo và public key đã cài trên VPS.
+- [x] Shell, cross-service deploy và Payment đã bị chặn.
+- [x] Host key VPS được pin trong repository.
+- [ ] Đăng nhập `gh` và thêm `VPS_SSH_PRIVATE_KEY` vào tám repository.
+- [ ] Push các commit CD lên GitHub để chạy deployment đầu tiên.
