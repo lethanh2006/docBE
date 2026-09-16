@@ -1940,7 +1940,7 @@ Không restart liên tục trước khi đọc log và xác định dependency n
 
 ## 26. Continuous Deployment từ GitHub Actions
 
-### 26.1. Kiến trúc CD
+### 26.1. Kiến trúc CI/CD lai, riêng trigger và chung logic
 
 Mỗi service là một Git repository độc lập. Tám repository đang chạy trên VPS
 có workflow `CD` riêng:
@@ -1956,29 +1956,59 @@ có workflow `CD` riêng:
 | User | `lethanh2006/USER_SERVICE` | `main` |
 | Workschedule | `lethanh2006/WORKSCHEDULE_SERVICE` | `main` |
 
-Payment không có CD vì chưa được triển khai.
+Payment có CI nhưng không có CD vì chưa được triển khai.
+
+Đã áp dụng mô hình lai ngày 16/09/2026: mỗi repository sở hữu trigger,
+nhánh phát hành và secret riêng; repository `lethanh2006/Logger` chứa reusable
+workflows và tài sản triển khai dùng chung. Không dựng thêm Jenkins trên VPS
+2 CPU/4 GB, và không gom mọi service thành một job deploy toàn hệ thống.
+
+Chín repository NestJS gọi chung CI; tám repository đang chạy gọi chung CD.
+Gateway vẫn được phép dùng lệnh test riêng vì lệnh test của nó đã bao gồm build.
+Chưa có template Go trong lần triển khai này; không coi mô tả polyglot là bằng
+chứng đã kiểm tra hoặc triển khai repository Go.
 
 Luồng tự động:
 
 1. Push code vào nhánh mặc định.
-2. Workflow `CI` chạy lint, test và build.
+2. Workflow `CI` gọi reusable CI: cài bằng lockfile, audit dependency production
+   (chặn mức critical), lint, kiểm tra formatting, test và build.
 3. Chỉ khi CI thành công, workflow `CD` checkout đúng commit SHA đã qua CI.
-4. GitHub runner build đúng một image `linux/amd64`.
+4. Reusable CD kiểm tra service được phép, SHA đầy đủ và SHA còn là HEAD nhánh
+   mặc định tại thời điểm preflight; runner build đúng một image `linux/amd64`.
 5. Image được nén và truyền trực tiếp qua SSH; không cần Docker registry. Các
    archive có thể được nhận và kiểm tra song song.
 6. VPS dùng deployment lock cho đoạn thay image/container, lưu image hiện tại
    thành tag `rollback`, nạp image mới và chỉ recreate service vừa thay đổi.
 7. Compose chờ healthcheck. Nếu lỗi, receiver tự đưa image cũ trở lại.
 
-Các file của mỗi service:
+Các file mỏng của mỗi service:
 
 ```text
 .github/
-├── workflows/cd.yml
-├── docker/node-service.Dockerfile
-├── docker/node-service.Dockerfile.dockerignore
-└── known_hosts
+├── CI.md
+└── workflows/
+    ├── ci.yml
+    └── cd.yml  # Không có trong Payment
 ```
+
+Một nơi duy trì logic chung, trong repository Logger:
+
+```text
+.github/workflows/reusable-node-ci.yml
+.github/workflows/reusable-vps-cd.yml
+deploy/node-service.Dockerfile
+deploy/node-service.Dockerfile.dockerignore
+deploy/vps-known_hosts
+deploy/vps-ci-receiver
+```
+
+Các caller đang pin workflow và `platform-ref` cùng commit bất biến:
+`3edef57e4ab192832b7a2d5465b2948592a55125`. Không đổi thành `@main`:
+thay đổi Logger không được tự ý thay pipeline của mọi service đang sử dụng.
+Host key trong commit này đã được đối chiếu qua phiên SSH tin cậy với VPS,
+fingerprint Ed25519 là `SHA256:9LTwAg0cr5gZSBVypsgvUCyRFcJ3K8fT76MZqc1ICZg`.
+Không chữa lỗi host key bằng cách tắt `StrictHostKeyChecking`.
 
 Receiver dùng chung được lưu tại:
 
@@ -2066,8 +2096,10 @@ for repository in "${NRAPP_CD_REPOSITORIES[@]}"; do
 done
 ```
 
-Nếu Logger chuyển thành private, vẫn phải cấu hình thêm `LOGGER_READ_TOKEN`
-như tài liệu CI của từng repository.
+Hiện Logger là public nên checkout tài sản chung không cần token bổ sung.
+Nếu chuyển Logger thành private, phải cấu hình quyền truy cập reusable workflow
+và sửa bước checkout cross-repo để nhận token đọc phù hợp. Workflow hiện tại
+chưa khai báo `LOGGER_READ_TOKEN`; chỉ thêm secret tên đó sẽ không đủ.
 
 ### 26.4. Kích hoạt CD
 
@@ -2141,3 +2173,77 @@ Các commit đã được nghiệm thu trong lần triển khai đầu tiên:
 | Todo | `fe4d41a3942e653f62c2e2aec44dc50c22f22db3` |
 | Workschedule | `be0837486e0387dfd42678cac01bffb5b8016700` |
 | Canteen | `c8376d2eb4d3acc9ef71790ccb2ab12aceefbe80` |
+
+### 26.7. Kết quả chuyển sang nền tảng dùng chung
+
+Cả chín CI và tám CD đã thành công; đã đọc label revision và health trực tiếp
+trên VPS. Payment vẫn không có container và không có workflow CD.
+
+| Service | Commit đã nghiệm thu trên VPS |
+|---|---|
+| Gateway | `8846bf1e1853fa1a867ed3d0b5eb66bec33bfe78` |
+| Auth | `959afe667da2faee157dc24a2c09564ac45b8a57` |
+| User | `ebbb3c422bd0ca6c15479479c10e4e220f7bea50` |
+| Mail | `36ab9044f3a9b765cdd017cd98b7e718eed67a49` |
+| Chat | `29afe70e0c22c3ddc088b37d421c40ccb7d283a4` |
+| Todo | `18b8b85e4df6d1c4d71570526666e19c1fb1a418` |
+| Workschedule | `ba305920b2856e2323eb15e7d24be1aee6242bdd` |
+| Canteen | `99603c4f46997b528ecda62513c0a379536d6045` |
+
+Payment chỉ qua CI tại `f1175182b2d056d4cba4329ac6bf06aee2ea0dbc`.
+Các commit service dùng thông điệp tiếng Việt `ci: chuyển ... sang quy trình dùng chung`.
+
+### 26.8. Khi sửa quy tắc chung hoặc cập nhật nền tảng
+
+1. Sửa reusable workflow/Dockerfile trong Logger; kiểm tra syntax bằng actionlint,
+   test gói observability và build thử image.
+2. Commit và push Logger; lấy full SHA bằng `git -C backend/logger rev-parse HEAD`.
+3. Trước tiên cập nhật Auth: trong cả `ci.yml` và `cd.yml`, thay SHA ở `uses:`
+   và `platform-ref` bằng cùng full SHA mới. Không sửa secret của service khác.
+4. Commit tiếng Việt, push Auth; chờ cả CI/CD thành công và đọc revision trên VPS.
+5. Sau canary mới cập nhật caller các service còn lại. Payment chỉ cập nhật CI.
+6. Nếu nền tảng mới lỗi, revert commit thay caller và push lại; nếu release ứng
+   dụng lỗi healthcheck, receiver tự rollback image. Đây là hai loại rollback khác nhau.
+
+Trên máy cá nhân, theo dõi một repository:
+
+```bash
+gh run list --repo lethanh2006/AUTH_SERVICE --limit 6
+gh run view RUN_ID --repo lethanh2006/AUTH_SERVICE --log-failed
+gh run watch RUN_ID --repo lethanh2006/AUTH_SERVICE --exit-status
+```
+
+Chỉ rerun lỗi truyền SSH tạm thời sau khi đã đọc log; không rerun mù lỗi test,
+host key hoặc healthcheck:
+
+```bash
+gh run rerun RUN_ID --repo lethanh2006/AUTH_SERVICE --failed
+```
+
+Trên VPS, kiểm tra image thực tế; thay `auth` bằng service muốn xem:
+
+```bash
+docker inspect nrapp-backend-auth-1 \
+  --format 'REV={{ index .Config.Labels "org.opencontainers.image.revision" }} HEALTH={{.State.Health.Status}}'
+curl -fsS http://127.0.0.1:4000/health
+tail -n 30 /opt/nrapp/cd/history.tsv
+```
+
+### 26.9. Nhược điểm còn lại — không phải đã xử lý hết
+
+| Giới hạn | Đã giảm rủi ro / việc còn cần làm |
+|---|---|
+| Logic chung có blast radius | Pin full SHA và canary trước; vẫn phải cập nhật pin ở từng repo khi nâng cấp |
+| Logger/GitHub Actions là phụ thuộc chung | Không ảnh hưởng container đã chạy, nhưng có thể chặn pipeline mới; chưa có nền tảng dự phòng |
+| Truyền image qua SSH chậm hoặc timeout | Ba lần thử và khóa deploy; Auth từng phải rerun, Gateway mất hơn 30 phút ở bước deploy. Chưa có cache build/registry phân phối image; cân nhắc registry và cơ chế nhận release từ VPS khi tần suất cao |
+| Một VPS và một deployment lock | Giảm tranh chấp nhưng không tạo HA; triển khai đồng loạt phải chờ tuần tự, chưa có canary traffic hoặc zero-downtime |
+| Rollback image không rollback dữ liệu | Chỉ giữ image trước; migration phải tương thích ngược và backup riêng |
+| Preflight stale SHA không phải giao dịch nguyên tử | HEAD có thể đổi sau preflight; chưa có điều phối release đa repo hoặc kiểm tra HEAD tại thời điểm thay container |
+| Dependency mức high vẫn còn | Audit hiện chỉ chặn critical. Multer/Nest và Nodemailer cần kế hoạch cập nhật/kiểm thử; không ép nâng major để làm xanh audit |
+| Supply-chain chưa khóa hoàn toàn | Reusable workflow pin SHA, nhưng actions và base image bên trong vẫn dùng tag; chưa có ký image/SBOM/pin digest đầy đủ |
+| Healthcheck không thay test nghiệp vụ | Chưa chứng minh OTP, chat, upload và các luồng nghiệp vụ chỉ bằng trạng thái healthy |
+| Grafana chưa là bảng điều phối CI/CD | Monitoring hiện đo VPS; chưa có dashboard tổng hợp deployment đa repo, alert phát hành hoặc orchestrator polyglot |
+
+Kết luận: mô hình lai phù hợp hệ thống hiện tại, giảm trùng logic mà giữ quyền
+deploy riêng theo service. Không tuyên bố đã loại bỏ toàn bộ nhược điểm hoặc đã
+đạt quy mô 14 dịch vụ/17 repo/478 deployment chỉ từ lần nghiệm thu này.

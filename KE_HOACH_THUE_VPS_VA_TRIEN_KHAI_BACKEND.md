@@ -2050,7 +2050,7 @@ Bước tiếp theo:
 | Traces | Jaeger persistent storage/retention phù hợp nếu cần điều tra qua reboot |
 | Entry/API | CORS theo origin, xác minh Google token, test IP/rate limiting theo topology thực |
 | Secret | Quy trình rotate từng loại, giữ tương thích hai đầu; không đổi toàn bộ secret mỗi deploy |
-| Delivery | CI/CD hiện build đúng commit đã qua CI, truyền image qua SSH key giới hạn theo service, kiểm tra health và tự rollback; cân nhắc registry/pin digest khi mở rộng nhiều VPS |
+| Delivery | Đã áp dụng CI/CD lai: caller riêng từng repo, reusable workflows/Dockerfile/host key tập trung ở Logger và pin full SHA; build commit đã qua CI, truyền image qua SSH key giới hạn theo service, kiểm tra health và tự rollback. Đã nghiệm thu 9 CI/8 CD; Payment chỉ CI. Vẫn còn độ trễ truyền SSH, dependency mức high và chưa có HA/điều phối đa repo; xem mục 26 runbook |
 | Tài chính | Hiện đang tắt; trước khi mở lại phải đối soát transaction/webhook/outbox/đơn hàng, không chỉ dựa dashboard UI |
 
 ### 18.3. Tách hoặc scale service có lý do
