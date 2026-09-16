@@ -1964,9 +1964,10 @@ Luồng tự động:
 2. Workflow `CI` chạy lint, test và build.
 3. Chỉ khi CI thành công, workflow `CD` checkout đúng commit SHA đã qua CI.
 4. GitHub runner build đúng một image `linux/amd64`.
-5. Image được nén và truyền trực tiếp qua SSH; không cần Docker registry.
-6. VPS lưu image hiện tại thành tag `rollback`, nạp image mới và chỉ recreate
-   service vừa thay đổi.
+5. Image được nén và truyền trực tiếp qua SSH; không cần Docker registry. Các
+   archive có thể được nhận và kiểm tra song song.
+6. VPS dùng deployment lock cho đoạn thay image/container, lưu image hiện tại
+   thành tag `rollback`, nạp image mới và chỉ recreate service vừa thay đổi.
 7. Compose chờ healthcheck. Nếu lỗi, receiver tự đưa image cũ trở lại.
 
 Các file của mỗi service:
@@ -2123,4 +2124,20 @@ Nếu healthcheck deployment mới thất bại, CD tự rollback và job GitHub
 - [x] Shell, cross-service deploy và Payment đã bị chặn.
 - [x] Host key VPS được pin trong repository.
 - [x] Đã đăng nhập `gh` và thêm `VPS_SSH_PRIVATE_KEY` vào tám repository.
-- [ ] Push các commit CD lên GitHub để chạy deployment đầu tiên.
+- [x] Đã push các commit CD lên GitHub và chạy deployment đầu tiên.
+- [x] CI và CD của cả tám repository đều thành công ngày 16/09/2026.
+- [x] Tám container chạy đúng commit SHA tương ứng và đều healthy.
+- [x] HTTPS `/health` trả `200`; Payment vẫn tắt và trả `503` có chủ đích.
+
+Các commit đã được nghiệm thu trong lần triển khai đầu tiên:
+
+| Service | Commit |
+|---|---|
+| Gateway | `f6bc42d7373ec76032212f061d50343033012202` |
+| Auth | `f24342a9a57e38b58918c8888cf8d3c5944981dd` |
+| User | `bc29264ec2a46864f2f892c4228698794d8974ba` |
+| Mail | `c75037db2f83cd732145716e18013c0855202437` |
+| Chat | `783d66156b5b7d6d51f12e7d748f12e53022af66` |
+| Todo | `fe4d41a3942e653f62c2e2aec44dc50c22f22db3` |
+| Workschedule | `be0837486e0387dfd42678cac01bffb5b8016700` |
+| Canteen | `c8376d2eb4d3acc9ef71790ccb2ab12aceefbe80` |
