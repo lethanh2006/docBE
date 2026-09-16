@@ -354,3 +354,8 @@ Kiểm tra code ngày 16/09/2026: trước thay đổi, Auth ghi credential rồ
 Hướng dẫn chi tiết và lệnh kiểm tra nằm trong `backend/auth/OUTBOX.md` và `backend/user/PROFILE_SYNC.md` tại từng repository service. Các suite integration dùng `OUTBOX_TEST_MONGO_URL` và tự tạo/xóa database test riêng để kiểm tra rollback, version đồng thời, duplicate và tombstone.
 
 Kiểm chứng triển khai: lint, format và build đều đạt; 51 test Auth + 32 test User đạt (bao gồm MongoDB replica set thật). Smoke trên MongoDB 7.0/RabbitMQ 4.2.7 xác nhận gửi bù sau broker restart, relay đồng thời, retry consumer sau TTL, tombstone và giữ event không hợp lệ trong queue dead.
+
+
+Triển khai VPS ngày 16/09/2026 đã hoàn tất qua CI/CD: [User `03e539a`](https://github.com/lethanh2006/USER_SERVICE/actions/runs/35098622022) lên trước, sau đó [Auth `b9ca6b9`](https://github.com/lethanh2006/AUTH_SERVICE/actions/runs/35099042281) lên thành công ở lần chạy CD thứ hai (lần đầu dừng do truyền image quá chậm). Auth cũ phục vụ lại trong lúc chờ truyền; khóa triển khai giữ bước thay container tới khi image đủ và các message cũ đã được xử lý hết.
+
+Kiểm tra trên Atlas thật sau triển khai: đăng ký HTTP tạo credential/outbox/profile, đổi email tăng version và cập nhật User, xóa HTTP giữ tombstone; cả ba sự kiện đã được broker confirm. Credential/profile thử đã xóa. Container Auth/User đều healthy, User readiness báo MongoDB/RabbitMQ up. MongoDB của hai service được xác nhận là replica set `atlas-9xhc0s-shard-0`, database `nrapp`, transaction chỉ đọc đã chạy thành công trước triển khai.
