@@ -2019,8 +2019,8 @@ Receiver cũng từ chối Payment.
 
 ### 26.3. Thêm secret vào tám GitHub repository
 
-Máy hiện tại chưa đăng nhập GitHub CLI. Trên **máy cá nhân**, đăng nhập tài
-khoản sở hữu các repository:
+Trên **máy cá nhân**, đăng nhập GitHub CLI bằng tài khoản sở hữu các
+repository, rồi kiểm tra trạng thái:
 
 ```bash
 gh auth login
@@ -2122,5 +2122,5 @@ Nếu healthcheck deployment mới thất bại, CD tự rollback và job GitHub
 - [x] Tám SSH key riêng đã tạo và public key đã cài trên VPS.
 - [x] Shell, cross-service deploy và Payment đã bị chặn.
 - [x] Host key VPS được pin trong repository.
-- [ ] Đăng nhập `gh` và thêm `VPS_SSH_PRIVATE_KEY` vào tám repository.
+- [x] Đã đăng nhập `gh` và thêm `VPS_SSH_PRIVATE_KEY` vào tám repository.
 - [ ] Push các commit CD lên GitHub để chạy deployment đầu tiên.
